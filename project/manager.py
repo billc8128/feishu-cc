@@ -215,7 +215,6 @@ def _cmd_delete(open_id: str, name: str) -> CommandResult:
     if not root.exists():
         return CommandResult(f"项目 '{name}' 不存在。", success=False)
     shutil.rmtree(root, ignore_errors=True)
-    state.clear_session_id(open_id, name)
     if state.get_current_project(open_id) == name:
         state.set_current_project(open_id, "scratch")
         ensure_project_root(open_id, "scratch")

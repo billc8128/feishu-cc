@@ -169,7 +169,10 @@ async def _dispatch(parsed: feishu_events.ParsedMessageEvent) -> None:
     except Exception as exc:
         logger.exception("dispatch failed")
         try:
-            await feishu_client.send_text(open_id, f"❌ 内部错误:{exc}")
+            from agent import runner as agent_runner
+            await feishu_client.send_text(
+                open_id, agent_runner._format_error_for_user(exc, open_id)
+            )
         except Exception:
             pass
 

@@ -2,10 +2,10 @@
 
 职责:
   1. 按 (open_id, project) 维护 ClaudeSDKClient 池,带空闲超时清理
+     —— client 实例自身在内存里保留多轮对话上下文(同一 client 的连续 query)
   2. 配置 GLM 后端(通过 env 注入到 SDK)
   3. 流式接收 SDK 消息,实时翻译成飞书消息发出去
-  4. 处理 session_id 持久化(下次进来 resume)
-  5. 提供 interrupt(open_id) 让 /stop 命令能终止当前任务
+  4. 提供 interrupt(open_id) 让 /stop 命令能终止当前任务
 """
 from __future__ import annotations
 
@@ -13,8 +13,9 @@ import asyncio
 import logging
 import os
 import time
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Tuple
+from typing import Deque, Dict, Optional, Tuple
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -99,57 +100,65 @@ DEFAULT_ALLOWED_TOOLS = [
 ]
 
 
-def _cli_stderr_logger(line: str) -> None:
-    """SDK 的 stderr callback:把 bundled CLI 的 stderr 写到我们的 logger。"""
-    line = line.rstrip()
-    if line:
-        logger.error("CLI STDERR: %s", line)
+# ---------- stderr 收集 ----------
+#
+# SDK 的 ProcessError.stderr 字段是硬编码的占位符 "Check stderr output for details",
+# 真正的 stderr 只能通过 options.stderr 回调拿到。所以我们:
+#   1. 每个 open_id 一个 deque,存最近 50 行 stderr
+#   2. 回调写 deque + logger(两边都有)
+#   3. agent 任务失败时把 deque 内容贴到飞书错误消息里
+
+_STDERR_BUFFER_LINES = 50
+_stderr_buffers: Dict[str, Deque[str]] = {}
 
 
-def _session_file_exists(session_id: str) -> bool:
-    """检查 SDK 的本地 session 文件是否存在。
-
-    SDK 把 session 写在 $HOME/.claude/projects/<encoded_cwd>/<session_id>.jsonl。
-    不知道 encoded_cwd 的精确规则,所以递归搜 projects 目录找 session_id。
-    """
-    import os
-    home = os.environ.get("HOME", "")
-    if not home:
-        return False
-    projects_dir = os.path.join(home, ".claude", "projects")
-    if not os.path.isdir(projects_dir):
-        return False
-    target = f"{session_id}.jsonl"
-    for root, _dirs, files in os.walk(projects_dir):
-        if target in files:
-            return True
-    return False
-
-
-def _safe_resume_id(open_id: str, project: str) -> str | None:
-    """返回一个可以安全 resume 的 session_id,或 None(让 SDK 新建)。
-
-    如果 SQLite 里存了 session_id 但对应的本地 session 文件不在(容器换用户、
-    Volume 重建、HOME 路径变化等情况),直接清掉 stale 记录返回 None。
-    """
-    sid = project_state.get_session_id(open_id, project)
-    if not sid:
-        return None
-    if _session_file_exists(sid):
-        return sid
-    logger.warning(
-        "stale session_id %s for %s/%s — file missing, clearing",
-        sid, open_id, project,
+def _make_stderr_collector(open_id: str):
+    """返回一个 stderr 回调,把每行 stderr 既写 logger 又塞进 open_id 的 deque。"""
+    buf = _stderr_buffers.setdefault(
+        open_id, deque(maxlen=_STDERR_BUFFER_LINES)
     )
-    project_state.clear_session_id(open_id, project)
-    return None
+
+    def _callback(line: str) -> None:
+        line = line.rstrip()
+        if not line:
+            return
+        buf.append(line)
+        logger.error("CLI STDERR [%s]: %s", open_id[:12], line)
+
+    return _callback
+
+
+def _pop_stderr(open_id: str) -> str:
+    """消费并返回某用户当前缓冲的 stderr,清空 deque。"""
+    buf = _stderr_buffers.get(open_id)
+    if not buf:
+        return ""
+    lines = list(buf)
+    buf.clear()
+    return "\n".join(lines)
+
+
+def _format_error_for_user(exc: Exception, open_id: str) -> str:
+    """把异常 + 缓存的 stderr 拼成一条人类可读的飞书错误消息。"""
+    stderr_text = _pop_stderr(open_id)
+    base = f"❌ 出错:{type(exc).__name__}: {exc}"
+    if stderr_text:
+        # 飞书单条消息有长度限制,截断最后 1500 个字符(stderr 常常很长)
+        if len(stderr_text) > 1500:
+            stderr_text = "…(前略)…\n" + stderr_text[-1500:]
+        return f"{base}\n\n--- CLI stderr ---\n{stderr_text}"
+    return base
 
 
 def _build_options(open_id: str, project: str, project_root: str) -> ClaudeAgentOptions:
-    """每个 (user, project) 一份独立的 options。"""
-    schedule_server = build_schedule_mcp(open_id)
+    """每个 (user, project) 一份独立的 options。
 
-    resume_id = _safe_resume_id(open_id, project)
+    注意:不传 resume —— ClaudeSDKClient 实例本身在内存里保留多轮对话上下文
+    (只要 pool 里的 client 没过期)。跨客户端实例不保留历史,这是可接受的
+    trade-off:SDK 的 session 文件生命周期不可控,强行 resume 会遇到
+    'No conversation found' 崩溃。
+    """
+    schedule_server = build_schedule_mcp(open_id)
 
     return ClaudeAgentOptions(
         cwd=project_root,
@@ -160,9 +169,12 @@ def _build_options(open_id: str, project: str, project_root: str) -> ClaudeAgent
         allowed_tools=DEFAULT_ALLOWED_TOOLS,
         hooks=build_hooks(open_id),
         mcp_servers={"schedule": schedule_server},
-        resume=resume_id,  # 首次为 None,SDK 会创建新 session
-        # 关键:把 bundled CLI 的 stderr 转发到我们的日志,否则 SDK 默认吞掉
-        stderr=_cli_stderr_logger,
+        # 关键:把 bundled CLI 的 stderr 收集起来,错误时合并发给用户
+        stderr=_make_stderr_collector(open_id),
+        # Claude 输出大量工具结果时可能超过默认 1MB buffer
+        max_buffer_size=10 * 1024 * 1024,
+        # 让 CLI 把自己的 debug 日志也写到 stderr,方便诊断
+        extra_args={"debug-to-stderr": None},
     )
 
 
@@ -226,7 +238,9 @@ async def _run_query(
         await client.query(text)
     except Exception as exc:
         logger.exception("client.query failed")
-        await feishu_client.send_text(open_id, f"❌ 出错:{exc}")
+        await feishu_client.send_text(
+            open_id, _format_error_for_user(exc, open_id)
+        )
         return
 
     # 累积本轮的文本回复;工具调用过程实时推送
@@ -263,10 +277,6 @@ async def _run_query(
                 if final_text:
                     await feishu_client.send_text(open_id, final_text)
 
-                # 持久化 session_id
-                if msg.session_id:
-                    project_state.set_session_id(open_id, project, msg.session_id)
-
                 # 显示成本/状态(可选)
                 if msg.is_error:
                     await feishu_client.send_text(
@@ -287,7 +297,9 @@ async def _run_query(
         raise
     except Exception as exc:
         logger.exception("receive_response failed")
-        await feishu_client.send_text(open_id, f"❌ 接收响应出错:{exc}")
+        await feishu_client.send_text(
+            open_id, _format_error_for_user(exc, open_id)
+        )
 
 
 def _format_tool_use(block: ToolUseBlock) -> Optional[str]:
@@ -335,31 +347,9 @@ async def _get_or_create_client(
         if pooled:
             return pooled
 
-        # 尝试用持久化的 session_id resume;如果 CLI 报"会话不存在"
-        # (例如容器重启后 session 文件丢了、或换用户跑),清掉 stale id 再起一个新会话。
-        try:
-            options = _build_options(open_id, project, project_root)
-            client = ClaudeSDKClient(options=options)
-            await client.connect()
-        except Exception as exc:
-            msg = str(exc).lower()
-            stale_session = (
-                "no conversation found" in msg
-                or "session" in msg and "not found" in msg
-            )
-            if stale_session and project_state.get_session_id(open_id, project):
-                logger.warning(
-                    "stale session for %s/%s, clearing and retrying without resume",
-                    open_id, project,
-                )
-                project_state.clear_session_id(open_id, project)
-                # 不带 resume 重试一次
-                options = _build_options(open_id, project, project_root)
-                client = ClaudeSDKClient(options=options)
-                await client.connect()
-            else:
-                raise
-
+        options = _build_options(open_id, project, project_root)
+        client = ClaudeSDKClient(options=options)
+        await client.connect()
         pooled = _PooledClient(client=client, project=project)
         _pool[key] = pooled
         return pooled
