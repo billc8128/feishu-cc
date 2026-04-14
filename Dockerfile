@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nodejs \
     npm \
     build-essential \
+    gosu \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -29,10 +30,17 @@ COPY . .
 # 兜底 chmod,确保 start.sh 可执行
 RUN chmod +x /app/start.sh && ls -la /app/start.sh
 
+# Claude Code CLI 拒绝以 root 跑 bypassPermissions 模式(安全护栏)。
+# 创建非 root 用户 app,start.sh 会用 gosu 切到 app 跑实际服务。
+# 容器仍以 root 启动,因为 Railway 挂载的 /data Volume 默认所有者是 root,
+# start.sh 顶部会先 chown /data 再 su 到 app 用户。
+RUN groupadd --system app && \
+    useradd --system --gid app --home /app --shell /bin/bash app && \
+    chown -R app:app /app
+
 # Railway 会注入 PORT 环境变量
 ENV PORT=8080
 EXPOSE 8080
 
-# 启动脚本:先做 import 探针 + 环境诊断,再起 uvicorn。
-# 用 bash 显式调用,避免 shebang/权限问题
+# 注意:不在这里 USER app —— 容器以 root 启动,start.sh 内部用 gosu 切换。
 CMD ["bash", "/app/start.sh"]

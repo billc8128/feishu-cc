@@ -2,7 +2,18 @@
 set -ex
 exec 2>&1
 
+# ---- 第一阶段:root 进来 → 修 /data 所有权 → gosu 切到 app 用户重入 ----
+if [ "$(id -u)" = "0" ]; then
+    echo "===== bootstrap (root) ====="
+    mkdir -p "${DATA_DIR:-/data}"
+    chown -R app:app "${DATA_DIR:-/data}"
+    echo "chowned ${DATA_DIR:-/data} to app:app"
+    exec gosu app bash /app/start.sh
+fi
+
+# ---- 第二阶段:app 用户运行真正的服务 ----
 echo "===== feishu-cc startup diagnostics ====="
+echo "running as: $(id)"
 echo "PORT=${PORT:-not_set}"
 echo "DATA_DIR=${DATA_DIR:-not_set}"
 echo "FEISHU_APP_ID=${FEISHU_APP_ID:0:8}..."
