@@ -24,17 +24,27 @@ logger = logging.getLogger(__name__)
 
 
 class FeishuClient:
-    """飞书客户端的最小封装。"""
+    """飞书客户端的最小封装。
+
+    懒加载:lark client 在第一次真正用到时才构造。这样模块 import 时
+    占位符 app_id/app_secret 不会让 lark builder 校验失败,容器可以
+    顺利起来等待真正的飞书凭证被填入。
+    """
 
     def __init__(self) -> None:
-        # lark-oapi 的 client 是单例的,内部自动管理 tenant_access_token 的获取与刷新
-        self.client = (
-            lark.Client.builder()
-            .app_id(settings.feishu_app_id)
-            .app_secret(settings.feishu_app_secret)
-            .log_level(lark.LogLevel.WARNING)
-            .build()
-        )
+        self._client = None
+
+    @property
+    def client(self):
+        if self._client is None:
+            self._client = (
+                lark.Client.builder()
+                .app_id(settings.feishu_app_id)
+                .app_secret(settings.feishu_app_secret)
+                .log_level(lark.LogLevel.WARNING)
+                .build()
+            )
+        return self._client
 
     # ---------- 发送消息 ----------
 
