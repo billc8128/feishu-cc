@@ -197,10 +197,14 @@ def _format_error_for_user(exc: Exception, open_id: str) -> str:
 def _build_options(open_id: str, project: str, project_root: str) -> ClaudeAgentOptions:
     """每个 (user, project) 一份独立的 options。
 
-    注意:不传 resume —— ClaudeSDKClient 实例本身在内存里保留多轮对话上下文
-    (只要 pool 里的 client 没过期)。跨客户端实例不保留历史,这是可接受的
-    trade-off:SDK 的 session 文件生命周期不可控,强行 resume 会遇到
-    'No conversation found' 崩溃。
+    持续记忆机制:
+    - SDK 把 session 文件写在 $HOME/.claude/projects/<cwd-encoded>/<uuid>.jsonl,
+      而我们在 start.sh 里把 HOME 指向 /data/home(Volume),所以 session
+      文件跨容器重启不丢。
+    - `continue_conversation=True` 让底层 CLI 加 `--continue`,自动接上
+      当前 cwd 下**最近**的那个 session(首次没有就新建,不会炸)。
+    - cwd 是 _per-project_ 的(每个 project 一个独立目录),所以不同项目
+      的对话完全隔离,不会互相串扰。
     """
     schedule_server = build_schedule_mcp(open_id)
     deliver_server = build_deliver_mcp(open_id)
@@ -208,6 +212,8 @@ def _build_options(open_id: str, project: str, project_root: str) -> ClaudeAgent
     return ClaudeAgentOptions(
         cwd=project_root,
         system_prompt=SYSTEM_PROMPT,
+        # 持续记忆:接上当前 cwd 下最近的 session(没有就新建)
+        continue_conversation=True,
         # 加载项目级 CLAUDE.md / skills / commands(对齐 Claude Code)
         setting_sources=["project"],
         # 飞书没法弹审批框,所以 bypass。安全由 hooks 兜底。

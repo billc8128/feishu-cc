@@ -45,24 +45,12 @@ except Exception as e:
     sys.exit(1)
 "
 
-echo "===== probing Claude session storage ====="
-echo "--- HOME tree ---"
-ls -la "${HOME}" 2>&1 || echo "(HOME does not exist)"
-echo "--- HOME/.claude tree ---"
-ls -la "${HOME}/.claude" 2>&1 || echo "(~/.claude does not exist)"
-echo "--- HOME/.claude/projects tree ---"
-ls -la "${HOME}/.claude/projects" 2>&1 || echo "(~/.claude/projects does not exist)"
-echo "--- recursive scan for .jsonl session files under HOME ---"
-find "${HOME}/.claude" -name "*.jsonl" -printf "%p %s bytes, mtime=%TY-%Tm-%Td %TH:%TM\n" 2>&1 | head -40 || echo "(no jsonl files)"
-echo "--- recursive scan for .jsonl anywhere under /data ---"
-find /data -name "*.jsonl" 2>/dev/null | head -20 || true
-echo "--- recursive scan for .jsonl anywhere under /root (in case CLI ignores HOME) ---"
-find /root -name "*.jsonl" 2>/dev/null | head -20 || true
-echo "--- recursive scan for .jsonl anywhere under /home ---"
-find /home -name "*.jsonl" 2>/dev/null | head -20 || true
-echo "--- bundled CLI subcommands (looking for session list tools) ---"
-BUNDLED_CLI=$(python -c "import claude_agent_sdk, os; print(os.path.join(os.path.dirname(claude_agent_sdk.__file__), '_bundled', 'claude'))" 2>&1)
-"${BUNDLED_CLI}" --help 2>&1 | head -60 || echo "(help failed)"
+echo "===== session storage check ====="
+# Session 文件由 bundled CLI 写到 $HOME/.claude/projects/,每次启动扫一眼
+# 方便排查"记忆丢失"这类问题
+SESSION_COUNT=$(find "${HOME}/.claude/projects" -name "*.jsonl" 2>/dev/null | wc -l)
+echo "persisted session files: ${SESSION_COUNT}"
+find "${HOME}/.claude/projects" -name "*.jsonl" -printf "  %p (%s bytes, %TY-%Tm-%Td %TH:%TM)\n" 2>/dev/null | head -10 || true
 
 echo "===== launching uvicorn on 0.0.0.0:${PORT} ====="
 exec uvicorn app:app --host 0.0.0.0 --port ${PORT} --workers 1 --log-level info
