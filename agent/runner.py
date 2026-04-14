@@ -183,9 +183,6 @@ async def _run_query(
 ) -> None:
     client = pooled.client
 
-    # 先发一条"思考中"占位消息,后续追加内容到新消息(飞书不支持长时间编辑同一条)
-    await feishu_client.send_text(open_id, f"🤔 [{project}] 思考中…")
-
     try:
         await client.query(text)
     except Exception as exc:
