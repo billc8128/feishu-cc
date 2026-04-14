@@ -26,5 +26,6 @@ COPY . .
 ENV PORT=8080
 EXPOSE 8080
 
-# 启动:uvicorn 单 worker(SDK client 池在内存里,多 worker 会重复占用)
-CMD uvicorn app:app --host 0.0.0.0 --port ${PORT} --workers 1
+# 启动脚本:先做 import 探针 + 环境诊断,再起 uvicorn。
+# 这样如果 import 失败能在 Railway 日志里看到完整 traceback。
+CMD ["/app/start.sh"]
