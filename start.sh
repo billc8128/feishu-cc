@@ -28,5 +28,19 @@ except Exception as e:
     sys.exit(1)
 "
 
+echo "===== probing bundled Claude CLI ====="
+echo "node version: $(node --version 2>&1 || echo 'NODE NOT INSTALLED')"
+echo "npm version: $(npm --version 2>&1 || echo 'NPM NOT INSTALLED')"
+BUNDLED_CLI=$(python -c "import claude_agent_sdk, os; print(os.path.join(os.path.dirname(claude_agent_sdk.__file__), '_bundled', 'claude'))" 2>&1)
+echo "bundled cli path: ${BUNDLED_CLI}"
+echo "bundled cli exists: $(test -e "${BUNDLED_CLI}" && echo yes || echo no)"
+echo "bundled cli executable: $(test -x "${BUNDLED_CLI}" && echo yes || echo no)"
+echo "bundled cli file type: $(file "${BUNDLED_CLI}" 2>&1 || echo 'no file cmd')"
+echo "bundled cli first line: $(head -n 1 "${BUNDLED_CLI}" 2>&1 || echo unreadable)"
+echo "--- attempting: ${BUNDLED_CLI} --version ---"
+"${BUNDLED_CLI}" --version 2>&1 || echo "EXITED WITH CODE $?"
+echo "--- attempting: node ${BUNDLED_CLI} --version ---"
+node "${BUNDLED_CLI}" --version 2>&1 || echo "EXITED WITH CODE $?"
+
 echo "===== launching uvicorn on 0.0.0.0:${PORT} ====="
 exec uvicorn app:app --host 0.0.0.0 --port ${PORT} --workers 1 --log-level info
