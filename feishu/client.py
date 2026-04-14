@@ -7,10 +7,15 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import Optional
 
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
+    CreateFileRequest,
+    CreateFileRequestBody,
+    CreateImageRequest,
+    CreateImageRequestBody,
     CreateMessageRequest,
     CreateMessageRequestBody,
     CreateMessageResponse,
@@ -82,6 +87,116 @@ class FeishuClient:
             msg_type="interactive",
             content=json.dumps(card, ensure_ascii=False),
         )
+
+    # ---------- 文件 / 图片 ----------
+
+    # 飞书限制:单张图片 ≤ 10MB,单个文件 ≤ 30MB
+    MAX_IMAGE_BYTES = 10 * 1024 * 1024
+    MAX_FILE_BYTES = 30 * 1024 * 1024
+
+    # 扩展名到 file_type 的映射;未知类型走 "stream"
+    _FILE_TYPE_MAP = {
+        "pdf": "pdf",
+        "doc": "doc", "docx": "doc",
+        "xls": "xls", "xlsx": "xls",
+        "ppt": "ppt", "pptx": "ppt",
+        "mp4": "mp4", "mov": "mp4",
+        "opus": "opus",
+    }
+
+    _IMAGE_EXT = {"png", "jpg", "jpeg", "gif", "webp", "bmp"}
+
+    @classmethod
+    def is_image(cls, file_path: str) -> bool:
+        ext = Path(file_path).suffix.lstrip(".").lower()
+        return ext in cls._IMAGE_EXT
+
+    async def upload_image(self, file_path: str) -> Optional[str]:
+        """上传图片到飞书,返回 image_key。"""
+        p = Path(file_path)
+        if not p.is_file():
+            logger.error("upload_image: file not found %s", file_path)
+            return None
+        size = p.stat().st_size
+        if size > self.MAX_IMAGE_BYTES:
+            logger.error(
+                "upload_image: %s too large (%d bytes > %d)",
+                file_path, size, self.MAX_IMAGE_BYTES,
+            )
+            return None
+        with open(p, "rb") as f:
+            req = (
+                CreateImageRequest.builder()
+                .request_body(
+                    CreateImageRequestBody.builder()
+                    .image_type("message")
+                    .image(f)
+                    .build()
+                )
+                .build()
+            )
+            resp = await self.client.im.v1.image.acreate(req)
+        if not resp.success():
+            logger.error(
+                "upload_image failed: code=%s msg=%s",
+                resp.code, resp.msg,
+            )
+            return None
+        return resp.data.image_key if resp.data else None
+
+    async def upload_file(self, file_path: str) -> Optional[str]:
+        """上传普通文件到飞书,返回 file_key。"""
+        p = Path(file_path)
+        if not p.is_file():
+            logger.error("upload_file: file not found %s", file_path)
+            return None
+        size = p.stat().st_size
+        if size > self.MAX_FILE_BYTES:
+            logger.error(
+                "upload_file: %s too large (%d bytes > %d)",
+                file_path, size, self.MAX_FILE_BYTES,
+            )
+            return None
+        ext = p.suffix.lstrip(".").lower()
+        file_type = self._FILE_TYPE_MAP.get(ext, "stream")
+        with open(p, "rb") as f:
+            req = (
+                CreateFileRequest.builder()
+                .request_body(
+                    CreateFileRequestBody.builder()
+                    .file_type(file_type)
+                    .file_name(p.name)
+                    .file(f)
+                    .build()
+                )
+                .build()
+            )
+            resp = await self.client.im.v1.file.acreate(req)
+        if not resp.success():
+            logger.error(
+                "upload_file failed: code=%s msg=%s",
+                resp.code, resp.msg,
+            )
+            return None
+        return resp.data.file_key if resp.data else None
+
+    async def send_image(self, open_id: str, image_key: str) -> Optional[str]:
+        return await self._create_message(
+            receive_id_type="open_id",
+            receive_id=open_id,
+            msg_type="image",
+            content=json.dumps({"image_key": image_key}, ensure_ascii=False),
+        )
+
+    async def send_file(self, open_id: str, file_key: str) -> Optional[str]:
+        return await self._create_message(
+            receive_id_type="open_id",
+            receive_id=open_id,
+            msg_type="file",
+            content=json.dumps({"file_key": file_key}, ensure_ascii=False),
+        )
+
+    # ---------- 编辑消息 ----------
 
     async def update_text(self, message_id: str, text: str) -> bool:
         """编辑已发出的消息(飞书要求消息发出后一段时间内才能编辑)。"""

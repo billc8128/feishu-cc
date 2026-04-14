@@ -30,6 +30,7 @@ from claude_agent_sdk import (
 )
 
 from agent.hooks import build_hooks
+from agent.tools_deliver import build_deliver_mcp
 from agent.tools_schedule import build_schedule_mcp
 from config import settings
 from feishu.client import feishu_client
@@ -97,7 +98,50 @@ DEFAULT_ALLOWED_TOOLS = [
     "mcp__schedule__schedule_create",
     "mcp__schedule__schedule_list",
     "mcp__schedule__schedule_delete",
+    # 自定义 deliver MCP(把文件真正发给飞书用户)
+    "mcp__deliver__deliver_file",
 ]
+
+
+# ---------- System prompt(告诉 Claude 自己在哪里、用户在哪里、怎么交付) ----------
+
+SYSTEM_PROMPT = """你正在一台运行在 Docker 容器里的 Linux 服务器上工作,通过飞书 IM 与用户对话。
+
+# 环境约束(非常重要)
+
+你和用户**不在同一台机器上**。用户是中文飞书用户,他看不到你的文件系统,也不能直接打开你写入的任何文件路径。你的工作目录是一个临时沙盒(`/data/sandbox/users/<open_id>/<project>/`),沙盒内的文件只在服务器上存在。
+
+# 交付内容的正确方式
+
+当用户需要你给他一个"成果"时,根据类型选择:
+
+1. **代码片段 / 配置 / 命令 / 简短文本**:
+   - 直接在对话里用 Markdown 代码块完整贴出内容
+   - 不要说"我已经写到 xxx.py 了,你去看吧" —— 他看不到 xxx.py
+
+2. **一个完整的文件(HTML 页面、长脚本、PDF、图片、数据文件等)**:
+   - **必须调用 `deliver_file` 工具**把文件真正发给用户
+   - 先用 Write 写到当前工作目录,然后调用 `deliver_file(path="xxx.html", caption="简短说明")`
+   - 用户会在飞书里收到一个可下载的附件或图片预览
+   - 限制:图片 ≤ 10MB,其他文件 ≤ 30MB;超出就拆分或压缩
+
+3. **需要在服务器上实际执行才有意义的任务**(跑测试、git 操作、编译、数据处理):
+   - 用 Bash 实际执行
+   - 把执行结果(stdout / 错误 / 统计信息)汇报给用户
+   - 如果用户需要产物文件(比如打包好的 tar、生成的 csv),**调用 `deliver_file` 发给他**
+
+# 禁止行为
+
+- ❌ 不要说"请在 /xxx/yyy 找到文件" —— 用户无法访问
+- ❌ 不要告诉用户"你可以在本地 cd 到这个目录" —— 本地不是你的本地
+- ❌ 不要以为用户能看到你的 stdout —— 除非你把内容主动发回对话
+
+# 其他
+
+- 用户主要用**中文**交流,请用中文回复
+- 当前是全功能的 Claude Code agent,你有完整的文件读写、Bash 执行、Web 搜索、子代理能力
+- 遇到权限拦截(某些危险 Bash 命令被 hook 阻拦)时换一种方式实现,不要硬撞
+"""
 
 
 # ---------- stderr 收集 ----------
@@ -159,16 +203,21 @@ def _build_options(open_id: str, project: str, project_root: str) -> ClaudeAgent
     'No conversation found' 崩溃。
     """
     schedule_server = build_schedule_mcp(open_id)
+    deliver_server = build_deliver_mcp(open_id)
 
     return ClaudeAgentOptions(
         cwd=project_root,
+        system_prompt=SYSTEM_PROMPT,
         # 加载项目级 CLAUDE.md / skills / commands(对齐 Claude Code)
         setting_sources=["project"],
         # 飞书没法弹审批框,所以 bypass。安全由 hooks 兜底。
         permission_mode="bypassPermissions",
         allowed_tools=DEFAULT_ALLOWED_TOOLS,
         hooks=build_hooks(open_id),
-        mcp_servers={"schedule": schedule_server},
+        mcp_servers={
+            "schedule": schedule_server,
+            "deliver": deliver_server,
+        },
         # 关键:把 bundled CLI 的 stderr 收集起来,错误时合并发给用户
         stderr=_make_stderr_collector(open_id),
         # Claude 输出大量工具结果时可能超过默认 1MB buffer
@@ -332,6 +381,8 @@ def _format_tool_use(block: ToolUseBlock) -> Optional[str]:
         return f"🤖 调用子代理:{inp.get('subagent_type', inp.get('description', ''))}"
     if name.startswith("mcp__schedule__"):
         return f"⏰ 定时任务:{name.removeprefix('mcp__schedule__')}"
+    if name == "mcp__deliver__deliver_file":
+        return f"📦 交付文件:{inp.get('path', '?')}"
     return f"🔧 {name}"
 
 
