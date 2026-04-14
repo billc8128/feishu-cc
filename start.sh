@@ -1,5 +1,6 @@
 #!/bin/bash
-set -e
+set -ex
+exec 2>&1
 
 echo "===== feishu-cc startup diagnostics ====="
 echo "PORT=${PORT:-not_set}"
