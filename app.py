@@ -44,6 +44,11 @@ app = FastAPI(title="feishu-cc", version="0.1.0")
 async def on_startup() -> None:
     from scheduler import store as scheduler_store
     from scheduler import runner as scheduler_runner
+    from project import state as project_state
+
+    # 显式触发两个 store 的 schema 初始化,不依赖懒加载顺序
+    scheduler_store._ensure_meta_schema()
+    project_state._ensure_schema()
 
     sched = scheduler_store.get_scheduler()
     sched.start()

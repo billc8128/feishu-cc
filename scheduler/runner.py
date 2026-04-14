@@ -76,11 +76,8 @@ def restore_jobs_on_startup() -> None:
     APScheduler 自己也有 jobstore 持久化,但元数据库是 single source of truth。
     """
     tasks = []
-    # 收集所有用户的所有任务(扫一遍元数据)
-    import sqlite3
-
-    settings.ensure_dirs()
-    with sqlite3.connect(settings.sqlite_path) as conn:
+    # 走 store._conn() 强制触发 schema 初始化(防止表不存在)
+    with store._conn() as conn:
         cur = conn.execute(
             "SELECT task_id, cron_expr FROM schedule_tasks"
         )
