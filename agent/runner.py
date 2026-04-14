@@ -106,11 +106,50 @@ def _cli_stderr_logger(line: str) -> None:
         logger.error("CLI STDERR: %s", line)
 
 
+def _session_file_exists(session_id: str) -> bool:
+    """检查 SDK 的本地 session 文件是否存在。
+
+    SDK 把 session 写在 $HOME/.claude/projects/<encoded_cwd>/<session_id>.jsonl。
+    不知道 encoded_cwd 的精确规则,所以递归搜 projects 目录找 session_id。
+    """
+    import os
+    home = os.environ.get("HOME", "")
+    if not home:
+        return False
+    projects_dir = os.path.join(home, ".claude", "projects")
+    if not os.path.isdir(projects_dir):
+        return False
+    target = f"{session_id}.jsonl"
+    for root, _dirs, files in os.walk(projects_dir):
+        if target in files:
+            return True
+    return False
+
+
+def _safe_resume_id(open_id: str, project: str) -> str | None:
+    """返回一个可以安全 resume 的 session_id,或 None(让 SDK 新建)。
+
+    如果 SQLite 里存了 session_id 但对应的本地 session 文件不在(容器换用户、
+    Volume 重建、HOME 路径变化等情况),直接清掉 stale 记录返回 None。
+    """
+    sid = project_state.get_session_id(open_id, project)
+    if not sid:
+        return None
+    if _session_file_exists(sid):
+        return sid
+    logger.warning(
+        "stale session_id %s for %s/%s — file missing, clearing",
+        sid, open_id, project,
+    )
+    project_state.clear_session_id(open_id, project)
+    return None
+
+
 def _build_options(open_id: str, project: str, project_root: str) -> ClaudeAgentOptions:
     """每个 (user, project) 一份独立的 options。"""
     schedule_server = build_schedule_mcp(open_id)
 
-    resume_id = project_state.get_session_id(open_id, project)
+    resume_id = _safe_resume_id(open_id, project)
 
     return ClaudeAgentOptions(
         cwd=project_root,
