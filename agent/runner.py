@@ -99,6 +99,13 @@ DEFAULT_ALLOWED_TOOLS = [
 ]
 
 
+def _cli_stderr_logger(line: str) -> None:
+    """SDK 的 stderr callback:把 bundled CLI 的 stderr 写到我们的 logger。"""
+    line = line.rstrip()
+    if line:
+        logger.error("CLI STDERR: %s", line)
+
+
 def _build_options(open_id: str, project: str, project_root: str) -> ClaudeAgentOptions:
     """每个 (user, project) 一份独立的 options。"""
     schedule_server = build_schedule_mcp(open_id)
@@ -115,6 +122,8 @@ def _build_options(open_id: str, project: str, project_root: str) -> ClaudeAgent
         hooks=build_hooks(open_id),
         mcp_servers={"schedule": schedule_server},
         resume=resume_id,  # 首次为 None,SDK 会创建新 session
+        # 关键:把 bundled CLI 的 stderr 转发到我们的日志,否则 SDK 默认吞掉
+        stderr=_cli_stderr_logger,
     )
 
 
