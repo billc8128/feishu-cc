@@ -6,14 +6,20 @@ exec 2>&1
 if [ "$(id -u)" = "0" ]; then
     echo "===== bootstrap (root) ====="
     mkdir -p "${DATA_DIR:-/data}"
+    mkdir -p "${DATA_DIR:-/data}/home/.claude"
     chown -R app:app "${DATA_DIR:-/data}"
     echo "chowned ${DATA_DIR:-/data} to app:app"
     exec gosu app bash /app/start.sh
 fi
 
 # ---- 第二阶段:app 用户运行真正的服务 ----
+# 把 HOME 指到 Volume 里,这样 SDK 的 session(默认 ~/.claude/projects/)
+# 就持久化在 /data/home/.claude/,跨容器重启不丢。
+export HOME="${DATA_DIR:-/data}/home"
+
 echo "===== feishu-cc startup diagnostics ====="
 echo "running as: $(id)"
+echo "HOME=${HOME}"
 echo "PORT=${PORT:-not_set}"
 echo "DATA_DIR=${DATA_DIR:-not_set}"
 echo "FEISHU_APP_ID=${FEISHU_APP_ID:0:8}..."

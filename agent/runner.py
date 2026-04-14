@@ -296,9 +296,31 @@ async def _get_or_create_client(
         if pooled:
             return pooled
 
-        options = _build_options(open_id, project, project_root)
-        client = ClaudeSDKClient(options=options)
-        await client.connect()
+        # 尝试用持久化的 session_id resume;如果 CLI 报"会话不存在"
+        # (例如容器重启后 session 文件丢了、或换用户跑),清掉 stale id 再起一个新会话。
+        try:
+            options = _build_options(open_id, project, project_root)
+            client = ClaudeSDKClient(options=options)
+            await client.connect()
+        except Exception as exc:
+            msg = str(exc).lower()
+            stale_session = (
+                "no conversation found" in msg
+                or "session" in msg and "not found" in msg
+            )
+            if stale_session and project_state.get_session_id(open_id, project):
+                logger.warning(
+                    "stale session for %s/%s, clearing and retrying without resume",
+                    open_id, project,
+                )
+                project_state.clear_session_id(open_id, project)
+                # 不带 resume 重试一次
+                options = _build_options(open_id, project, project_root)
+                client = ClaudeSDKClient(options=options)
+                await client.connect()
+            else:
+                raise
+
         pooled = _PooledClient(client=client, project=project)
         _pool[key] = pooled
         return pooled
