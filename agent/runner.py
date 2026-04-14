@@ -15,6 +15,7 @@ import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Deque, Dict, Optional, Tuple
 
 from claude_agent_sdk import (
@@ -194,26 +195,75 @@ def _format_error_for_user(exc: Exception, open_id: str) -> str:
     return base
 
 
+def _encoded_cwd_dir(project_root: str) -> Path:
+    """SDK/CLI 把 session 文件存在 $HOME/.claude/projects/<cwd>/,
+    其中 <cwd> 是 project_root 把 '/' 换成 '-'。
+    """
+    home = os.environ.get("HOME", "/data/home")
+    # 规则:把绝对路径的每个 "/" 换成 "-",首字符也加一个 "-"
+    # 例如 /data/sandbox/users/ou_xxx/scratch → -data-sandbox-users-ou_xxx-scratch
+    encoded = project_root.replace("/", "-")
+    return Path(home) / ".claude" / "projects" / encoded
+
+
+def _latest_session_id_for_cwd(project_root: str) -> Optional[str]:
+    """扫描这个 cwd 对应的 projects 子目录,找 mtime 最新的 .jsonl,
+    抠出 session_id(文件名去掉 .jsonl)。没有文件就返回 None。
+
+    这是替代 CLI 的 --continue/pointer 机制的最简实现。CLI 的 --continue
+    依赖一个 "bridge pointer" 文件,REPL 模式才会写,SDK 的 stream-json
+    模式不写,所以 --continue 对我们无效。自己扫 jsonl 最稳。
+    """
+    d = _encoded_cwd_dir(project_root)
+    if not d.is_dir():
+        return None
+    try:
+        candidates = sorted(
+            d.glob("*.jsonl"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    except Exception as exc:
+        logger.warning("failed to list session files in %s: %s", d, exc)
+        return None
+    if not candidates:
+        return None
+    latest = candidates[0]
+    # session_id 是文件名去掉 .jsonl
+    return latest.stem
+
+
 def _build_options(open_id: str, project: str, project_root: str) -> ClaudeAgentOptions:
     """每个 (user, project) 一份独立的 options。
 
     持续记忆机制:
     - SDK 把 session 文件写在 $HOME/.claude/projects/<cwd-encoded>/<uuid>.jsonl,
-      而我们在 start.sh 里把 HOME 指向 /data/home(Volume),所以 session
-      文件跨容器重启不丢。
-    - `continue_conversation=True` 让底层 CLI 加 `--continue`,自动接上
-      当前 cwd 下**最近**的那个 session(首次没有就新建,不会炸)。
+      HOME 指向 /data/home(Volume),跨重启持久化。
+    - 每次启动新 client 时,扫描 cwd 对应的 projects 子目录,找 mtime 最新的
+      jsonl,把 session_id 通过 `resume=` 传给 CLI,让它恢复该会话。
+    - 为什么不用 continue_conversation=True:CLI 的 --continue 依赖 REPL
+      模式写的 pointer 文件,SDK stream-json 模式不写 pointer,所以无效。
     - cwd 是 _per-project_ 的(每个 project 一个独立目录),所以不同项目
       的对话完全隔离,不会互相串扰。
+    - 如果 resume 指向的 session 文件损坏/版本不兼容,SDK 会抛 ProcessError
+      包含 "No conversation found" 之类错误,我们在 _get_or_create_client
+      的 catch 里会降级到不带 resume 重试。
     """
     schedule_server = build_schedule_mcp(open_id)
     deliver_server = build_deliver_mcp(open_id)
 
+    resume_id = _latest_session_id_for_cwd(project_root)
+    if resume_id:
+        logger.info(
+            "resuming session %s for %s/%s",
+            resume_id[:8], open_id[:12], project,
+        )
+
     return ClaudeAgentOptions(
         cwd=project_root,
         system_prompt=SYSTEM_PROMPT,
-        # 持续记忆:接上当前 cwd 下最近的 session(没有就新建)
-        continue_conversation=True,
+        # 持续记忆:精确 resume 到当前 cwd 下最新的 session
+        resume=resume_id,
         # 加载项目级 CLAUDE.md / skills / commands(对齐 Claude Code)
         setting_sources=["project"],
         # 飞书没法弹审批框,所以 bypass。安全由 hooks 兜底。
@@ -407,12 +457,51 @@ async def _get_or_create_client(
         if pooled:
             return pooled
 
-        options = _build_options(open_id, project, project_root)
-        client = ClaudeSDKClient(options=options)
-        await client.connect()
+        # 第一次尝试:带 resume(接上之前的会话)
+        try:
+            options = _build_options(open_id, project, project_root)
+            client = ClaudeSDKClient(options=options)
+            await client.connect()
+        except Exception as exc:
+            # 如果是 resume 失败(session 文件损坏、格式不兼容等),
+            # 降级到不带 resume 重试一次
+            if _build_options.__doc__:  # always truthy; satisfies linter
+                pass
+            logger.warning(
+                "client.connect with resume failed (%s), retrying without resume",
+                exc,
+            )
+            # 强制不带 resume 重建 options —— 临时用一个 flag 绕过扫描
+            options = _build_options_no_resume(open_id, project, project_root)
+            client = ClaudeSDKClient(options=options)
+            await client.connect()
+
         pooled = _PooledClient(client=client, project=project)
         _pool[key] = pooled
         return pooled
+
+
+def _build_options_no_resume(
+    open_id: str, project: str, project_root: str
+) -> ClaudeAgentOptions:
+    """兜底版本:强制不 resume,构造干净的新 session。"""
+    schedule_server = build_schedule_mcp(open_id)
+    deliver_server = build_deliver_mcp(open_id)
+    return ClaudeAgentOptions(
+        cwd=project_root,
+        system_prompt=SYSTEM_PROMPT,
+        setting_sources=["project"],
+        permission_mode="bypassPermissions",
+        allowed_tools=DEFAULT_ALLOWED_TOOLS,
+        hooks=build_hooks(open_id),
+        mcp_servers={
+            "schedule": schedule_server,
+            "deliver": deliver_server,
+        },
+        stderr=_make_stderr_collector(open_id),
+        max_buffer_size=10 * 1024 * 1024,
+        extra_args={"debug-to-stderr": None},
+    )
 
 
 async def _evict_idle_locked() -> None:
