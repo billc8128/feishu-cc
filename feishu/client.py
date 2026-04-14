@@ -69,18 +69,35 @@ class FeishuClient:
             content=json.dumps({"text": text}, ensure_ascii=False),
         )
 
-    async def send_markdown(self, open_id: str, title: str, md: str) -> Optional[str]:
-        """发交互式卡片(用于富文本展示工具进度等)。"""
-        card = {
+    async def send_markdown(
+        self,
+        open_id: str,
+        md: str,
+        title: Optional[str] = None,
+    ) -> Optional[str]:
+        """发交互式卡片,渲染 Markdown 文本。
+
+        - title 不给就不渲染 header(更适合日常对话的轻量卡片)
+        - 飞书 markdown 元素原生支持代码块(```lang + 代码),飞书 7.6+
+          客户端会自动给代码块加复制按钮,不需要我们额外做 action 元素
+        - 飞书卡片单条总 JSON 长度大约不能超过 30KB,超长文本我们先截断
+        """
+        # 粗略防御:markdown 内容超过 20KB 就截断(给卡片 JSON 包装留余地)
+        if len(md) > 20000:
+            md = md[:20000] + "\n\n…(内容过长已截断)"
+
+        card: dict = {
             "config": {"wide_screen_mode": True},
-            "header": {
-                "title": {"tag": "plain_text", "content": title},
-                "template": "blue",
-            },
             "elements": [
                 {"tag": "markdown", "content": md},
             ],
         }
+        if title:
+            card["header"] = {
+                "title": {"tag": "plain_text", "content": title},
+                "template": "blue",
+            }
+
         return await self._create_message(
             receive_id_type="open_id",
             receive_id=open_id,

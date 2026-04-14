@@ -321,10 +321,13 @@ async def _run_query(
                             )
 
             elif isinstance(msg, ResultMessage):
-                # 一轮结束,发送累积的文本回复
+                # 一轮结束,发送累积的文本回复(用卡片渲染 Markdown)
                 final_text = "".join(text_buffer).strip()
                 if final_text:
-                    await feishu_client.send_text(open_id, final_text)
+                    sent = await feishu_client.send_markdown(open_id, final_text)
+                    # 卡片发送失败时 fallback 到纯文本,保证用户至少能看到内容
+                    if not sent:
+                        await feishu_client.send_text(open_id, final_text)
 
                 # 显示成本/状态(可选)
                 if msg.is_error:
