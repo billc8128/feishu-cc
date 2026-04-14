@@ -45,19 +45,24 @@ except Exception as e:
     sys.exit(1)
 "
 
-echo "===== probing bundled Claude CLI ====="
-echo "node version: $(node --version 2>&1 || echo 'NODE NOT INSTALLED')"
-echo "npm version: $(npm --version 2>&1 || echo 'NPM NOT INSTALLED')"
+echo "===== probing Claude session storage ====="
+echo "--- HOME tree ---"
+ls -la "${HOME}" 2>&1 || echo "(HOME does not exist)"
+echo "--- HOME/.claude tree ---"
+ls -la "${HOME}/.claude" 2>&1 || echo "(~/.claude does not exist)"
+echo "--- HOME/.claude/projects tree ---"
+ls -la "${HOME}/.claude/projects" 2>&1 || echo "(~/.claude/projects does not exist)"
+echo "--- recursive scan for .jsonl session files under HOME ---"
+find "${HOME}/.claude" -name "*.jsonl" -printf "%p %s bytes, mtime=%TY-%Tm-%Td %TH:%TM\n" 2>&1 | head -40 || echo "(no jsonl files)"
+echo "--- recursive scan for .jsonl anywhere under /data ---"
+find /data -name "*.jsonl" 2>/dev/null | head -20 || true
+echo "--- recursive scan for .jsonl anywhere under /root (in case CLI ignores HOME) ---"
+find /root -name "*.jsonl" 2>/dev/null | head -20 || true
+echo "--- recursive scan for .jsonl anywhere under /home ---"
+find /home -name "*.jsonl" 2>/dev/null | head -20 || true
+echo "--- bundled CLI subcommands (looking for session list tools) ---"
 BUNDLED_CLI=$(python -c "import claude_agent_sdk, os; print(os.path.join(os.path.dirname(claude_agent_sdk.__file__), '_bundled', 'claude'))" 2>&1)
-echo "bundled cli path: ${BUNDLED_CLI}"
-echo "bundled cli exists: $(test -e "${BUNDLED_CLI}" && echo yes || echo no)"
-echo "bundled cli executable: $(test -x "${BUNDLED_CLI}" && echo yes || echo no)"
-echo "bundled cli file type: $(file "${BUNDLED_CLI}" 2>&1 || echo 'no file cmd')"
-echo "bundled cli first line: $(head -n 1 "${BUNDLED_CLI}" 2>&1 || echo unreadable)"
-echo "--- attempting: ${BUNDLED_CLI} --version ---"
-"${BUNDLED_CLI}" --version 2>&1 || echo "EXITED WITH CODE $?"
-echo "--- attempting: node ${BUNDLED_CLI} --version ---"
-node "${BUNDLED_CLI}" --version 2>&1 || echo "EXITED WITH CODE $?"
+"${BUNDLED_CLI}" --help 2>&1 | head -60 || echo "(help failed)"
 
 echo "===== launching uvicorn on 0.0.0.0:${PORT} ====="
 exec uvicorn app:app --host 0.0.0.0 --port ${PORT} --workers 1 --log-level info
