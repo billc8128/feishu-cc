@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,9 @@ from unittest.mock import AsyncMock, Mock
 os.environ.setdefault("ANTHROPIC_AUTH_TOKEN", "test-token")
 os.environ.setdefault("FEISHU_APP_ID", "test-app-id")
 os.environ.setdefault("FEISHU_APP_SECRET", "test-app-secret")
+
+if "feishu.client" in sys.modules and not hasattr(sys.modules["feishu.client"], "FeishuClient"):
+    del sys.modules["feishu.client"]
 
 from feishu.client import FeishuClient
 

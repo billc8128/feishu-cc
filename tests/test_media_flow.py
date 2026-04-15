@@ -40,24 +40,15 @@ def _install_test_stubs() -> None:
     fake_deliver = types.ModuleType("agent.tools_deliver")
     fake_deliver.build_deliver_mcp = lambda open_id: {}
 
-    fake_feishu_client_module = types.ModuleType("feishu.client")
-    fake_feishu_client_module.feishu_client = type(
-        "FakeFeishuClient",
-        (),
-        {
-            "send_text": AsyncMock(),
-            "send_markdown": AsyncMock(return_value=True),
-        },
-    )()
-
     sys.modules.setdefault("claude_agent_sdk", fake_sdk)
     sys.modules.setdefault("agent.hooks", fake_hooks)
     sys.modules.setdefault("agent.tools_schedule", fake_schedule)
     sys.modules.setdefault("agent.tools_deliver", fake_deliver)
-    sys.modules.setdefault("feishu.client", fake_feishu_client_module)
 
 
 _install_test_stubs()
+settings = importlib.import_module("config").settings
+settings.data_dir = "/tmp/feishu-cc-test-data"
 runner = importlib.import_module("agent.runner")
 app_module = importlib.import_module("app")
 

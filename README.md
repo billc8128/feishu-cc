@@ -133,6 +133,8 @@ ANTHROPIC_BASE_URL=https://open.bigmodel.cn/api/anthropic
 ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5.1
 ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5-turbo
 ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-4.5-air
+GLM_VISION_MODEL=glm-5v-turbo
+GLM_VISION_BASE_URL=https://api.z.ai/api/paas/v4/chat/completions
 API_TIMEOUT_MS=3000000
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 
@@ -291,7 +293,7 @@ feishu-cc/
 你可以把这个仓库 clone 到本地,然后用 Claude Code 打开它。Claude Code 能读懂自己写的代码,你可以让它:
 
 - "把 Bash 黑名单里的 sudo 拦截放开,我有些场景需要"
-- "加一个 /image 命令,让我能在飞书发图片给机器人看"
+- "把图片/视频分析提示词调得更偏产品拆解一点"
 - "把消息发送从纯文本改成飞书卡片,让工具进度更好看"
 
 代码改完后:
@@ -307,8 +309,9 @@ Railway 会自动重新部署。
 
 ## 已知限制
 
-1. **首版只支持文本消息**——发图片/语音/文件给机器人不会被处理(以后扩)
+1. **当前支持文本、图片和常见视频文件**——语音和其他未识别文件仍不会自动分析
 2. **定时任务用的是用户当前对话 session**——可能污染对话上下文,以后可以独立 session
 3. **没有成本上限保护**——如果 Claude 进入死循环狂跑工具,token 会烧很多。Railway 那边可以设月度预算上限作为兜底
 4. **没有跨容器持久化的客户端池**——容器重启后,所有正在跑的 agent 任务会丢(但 session 历史和定时任务不会丢,下次说话就接着原来的上下文了)
 5. **群聊未启用**——只私聊
+6. **视频分析依赖容器内 `ffmpeg`**——本仓库的 Dockerfile 已安装,如果你改基础镜像别漏掉它
