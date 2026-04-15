@@ -68,24 +68,6 @@ def _translate_session_runtime_error(error: RuntimeError) -> HTTPException:
     return HTTPException(status_code=409, detail=str(error))
 
 
-def _open_id_for_viewer_token(viewer_token: str) -> str:
-    sessions = getattr(manager, "_sessions", None)
-    if not isinstance(sessions, dict):
-        sessions = getattr(manager, "sessions", None)
-    if not isinstance(sessions, dict):
-        raise HTTPException(status_code=404, detail="viewer session not found")
-
-    for open_id, record in sessions.items():
-        if isinstance(record, dict):
-            token = record.get("viewer_token")
-        else:
-            token = getattr(record, "viewer_token", "")
-        if token == viewer_token:
-            return open_id
-
-    raise HTTPException(status_code=404, detail="viewer session not found")
-
-
 @app.get("/health")
 async def health() -> dict:
     return {"ok": True}
@@ -160,18 +142,16 @@ async def resume_session(open_id: str) -> dict:
 
 @app.post("/view/{viewer_token}/takeover")
 async def takeover_viewer_session(viewer_token: str) -> dict:
-    open_id = _open_id_for_viewer_token(viewer_token)
     try:
-        return await manager.takeover(open_id)
+        return await manager.takeover_by_viewer_token(viewer_token)
     except RuntimeError as error:
         raise _translate_session_runtime_error(error) from error
 
 
 @app.post("/view/{viewer_token}/resume")
 async def resume_viewer_session(viewer_token: str) -> dict:
-    open_id = _open_id_for_viewer_token(viewer_token)
     try:
-        return await manager.resume(open_id)
+        return await manager.resume_by_viewer_token(viewer_token)
     except RuntimeError as error:
         raise _translate_session_runtime_error(error) from error
 

@@ -94,14 +94,23 @@ def render_viewer_page(*, viewer_token: str) -> str:
 
       async function sendControlRequest(url, nextSrc, message) {{
         statusNode.textContent = "Updating control...";
-        const response = await fetch(url, {{ method: "POST" }});
-        const payload = await response.json();
-        if (!response.ok) {{
-          statusNode.textContent = payload.detail || "Unable to update control.";
-          return;
+        try {{
+          const response = await fetch(url, {{ method: "POST" }});
+          let payload = {{}};
+          try {{
+            payload = await response.json();
+          }} catch (error) {{
+            payload = {{}};
+          }}
+          if (!response.ok) {{
+            statusNode.textContent = payload.detail || "Unable to update control.";
+            return;
+          }}
+          frameNode.src = nextSrc;
+          statusNode.textContent = message;
+        }} catch (error) {{
+          statusNode.textContent = "Connection issue. Please try again.";
         }}
-        frameNode.src = nextSrc;
-        statusNode.textContent = message;
       }}
 
       takeoverButton.addEventListener("click", () => {{

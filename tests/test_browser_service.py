@@ -208,6 +208,31 @@ class BrowserServiceTests(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_takeover_by_viewer_token_switches_controller_to_human(self) -> None:
+        async def run_test() -> None:
+            session = await self.manager.ensure_session(
+                "ou_a", public_base_url="https://browser.example.com"
+            )
+
+            controlled = await self.manager.takeover_by_viewer_token(session["viewer_token"])
+
+            self.assertEqual(controlled["controller"], "human")
+            stored = await self.manager.get_session("ou_a")
+            self.assertEqual(stored["controller"], "human")
+
+        asyncio.run(run_test())
+
+    def test_resume_by_viewer_token_rejects_unknown_viewer_token(self) -> None:
+        async def run_test() -> None:
+            await self.manager.ensure_session("ou_a", public_base_url="https://browser.example.com")
+
+            with self.assertRaises(RuntimeError) as context:
+                await self.manager.resume_by_viewer_token("viewer-missing")
+
+            self.assertEqual(str(context.exception), "viewer session not found")
+
+        asyncio.run(run_test())
+
     def test_takeover_is_idempotent_when_already_human_controlled(self) -> None:
         async def run_test() -> None:
             clock = {"now": 100.0}

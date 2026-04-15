@@ -146,6 +146,34 @@ class BrowserSessionManager:
             record.last_control_change_at = now
             return self._serialize(record)
 
+    async def takeover_by_viewer_token(self, viewer_token: str) -> Dict[str, Any]:
+        async with self._lock:
+            open_id = self._require_open_id_for_viewer_token_locked(viewer_token)
+            await self._expire_active_session_for_open_id_locked(open_id)
+            record = self._require_active_locked(open_id)
+            if record.controller == HUMAN_CONTROLLER:
+                return self._serialize(record)
+            now = time.monotonic()
+            record.last_used_at = now
+            record.controller = HUMAN_CONTROLLER
+            record.paused_reason = TAKEOVER_PAUSED_REASON
+            record.last_control_change_at = now
+            return self._serialize(record)
+
+    async def resume_by_viewer_token(self, viewer_token: str) -> Dict[str, Any]:
+        async with self._lock:
+            open_id = self._require_open_id_for_viewer_token_locked(viewer_token)
+            await self._expire_active_session_for_open_id_locked(open_id)
+            record = self._require_active_locked(open_id)
+            if record.controller == AGENT_CONTROLLER:
+                return self._serialize(record)
+            now = time.monotonic()
+            record.last_used_at = now
+            record.controller = AGENT_CONTROLLER
+            record.paused_reason = ""
+            record.last_control_change_at = now
+            return self._serialize(record)
+
     async def navigate(self, open_id: str, url: str) -> Dict[str, Any]:
         async with self._lock:
             record = self._require_active_locked(open_id)
@@ -304,6 +332,16 @@ class BrowserSessionManager:
     def _require_agent_control_locked(self, record: SessionRecord) -> None:
         if record.controller != AGENT_CONTROLLER:
             raise RuntimeError(TAKEOVER_PAUSED_ERROR)
+
+    def _require_open_id_for_viewer_token_locked(self, viewer_token: str) -> str:
+        for open_id, record in self._sessions.items():
+            if (
+                record.viewer_token == viewer_token
+                and record.state == ACTIVE_SESSION_STATE
+                and self._active_open_id == open_id
+            ):
+                return open_id
+        raise RuntimeError("viewer session not found")
 
     async def _expire_active_session_for_open_id_locked(self, open_id: str) -> None:
         if self._active_open_id != open_id:
