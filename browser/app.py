@@ -18,6 +18,8 @@ from browser.service import (
 )
 from browser.viewer_page import render_viewer_page
 
+_VNC_CLIENT_INPUT_MESSAGE_TYPES = {4, 5, 6}
+
 settings.ensure_dirs()
 
 driver = PlaywrightBrowserDriver()
@@ -97,6 +99,18 @@ def _viewer_initial_status(session: dict) -> str:
     if session["controller"] == "human":
         return "Human takeover active. Agent control is paused."
     return "Viewer ready. Use Take Over to pause the agent or Resume Agent to hand control back."
+
+
+def _viewer_message_payload(message: dict) -> bytes | None:
+    if message.get("bytes") is not None:
+        return message["bytes"]
+    if message.get("text") is not None:
+        return message["text"].encode("utf-8")
+    return None
+
+
+def _viewer_message_requires_human_control(payload: bytes) -> bool:
+    return bool(payload) and payload[0] in _VNC_CLIENT_INPUT_MESSAGE_TYPES
 
 @app.get("/health")
 async def health() -> dict:
@@ -222,14 +236,16 @@ async def vnc_websocket(websocket: WebSocket, viewer_token: str) -> None:
                 message = await websocket.receive()
                 if message["type"] == "websocket.disconnect":
                     break
-                if message.get("bytes") is not None:
-                    if await manager.can_viewer_interact(viewer_token):
-                        writer.write(message["bytes"])
-                        await writer.drain()
-                elif message.get("text") is not None:
-                    if await manager.can_viewer_interact(viewer_token):
-                        writer.write(message["text"].encode("utf-8"))
-                        await writer.drain()
+                payload = _viewer_message_payload(message)
+                if payload is None:
+                    continue
+                if _viewer_message_requires_human_control(payload) and not await manager.can_viewer_interact(
+                    viewer_token
+                ):
+                    continue
+                writer.write(payload)
+                await writer.drain()
+                await manager.record_viewer_activity(viewer_token)
         finally:
             writer.close()
             with contextlib.suppress(Exception):

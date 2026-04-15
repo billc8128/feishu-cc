@@ -31,6 +31,7 @@ class _FakeManager:
         self.viewer_resume_token = None
         self.viewer_lookup_token = None
         self.viewer_interact_token = None
+        self.viewer_activity_tokens = []
         self.raise_on_action = None
 
     async def get_session(self, open_id: str):
@@ -52,6 +53,9 @@ class _FakeManager:
 
     async def validate_viewer_token(self, viewer_token: str):
         return viewer_token == self._session["viewer_token"]
+
+    async def record_viewer_activity(self, viewer_token: str):
+        self.viewer_activity_tokens.append(viewer_token)
 
     async def takeover(self, open_id: str):
         if self.raise_on_takeover:
@@ -322,13 +326,76 @@ class BrowserAppTests(unittest.TestCase):
             html,
         )
 
-    def test_websocket_blocks_viewer_input_when_agent_controls_session(self) -> None:
+    def test_websocket_forwards_protocol_messages_when_agent_controls_session(self) -> None:
         async def run_test() -> None:
             class _FakeWebSocket:
                 def __init__(self) -> None:
                     self.closed_code = None
                     self.accepted = False
-                    self.messages = [{"bytes": b"viewer-input"}, {"type": "websocket.disconnect"}]
+                    self.messages = [
+                        {"type": "websocket.receive", "bytes": b"\x03\x01\x00\x00\x00\x00\x05\xa0\x03\xc0"},
+                        {"type": "websocket.disconnect"},
+                    ]
+
+                async def accept(self) -> None:
+                    self.accepted = True
+
+                async def receive(self):
+                    return self.messages.pop(0)
+
+                async def send_bytes(self, data: bytes) -> None:
+                    return None
+
+                async def close(self, code=None) -> None:
+                    self.closed_code = code
+
+            class _FakeReader:
+                async def read(self, n: int) -> bytes:
+                    await asyncio.Future()
+
+            class _FakeWriter:
+                def __init__(self) -> None:
+                    self.writes = []
+
+                def write(self, data: bytes) -> None:
+                    self.writes.append(data)
+
+                async def drain(self) -> None:
+                    return None
+
+                def close(self) -> None:
+                    return None
+
+                async def wait_closed(self) -> None:
+                    return None
+
+            websocket = _FakeWebSocket()
+            writer = _FakeWriter()
+
+            with mock.patch.object(browser_app, "manager", browser_app.manager), mock.patch.object(
+                browser_app.manager, "validate_viewer_token", new=mock.AsyncMock(return_value=True)
+            ), mock.patch.object(
+                browser_app.manager, "can_viewer_interact", new=mock.AsyncMock(return_value=False)
+            ), mock.patch.object(
+                browser_app.asyncio, "open_connection", new=mock.AsyncMock(return_value=(_FakeReader(), writer))
+            ):
+                await browser_app.vnc_websocket(websocket, "viewer-ou_test")
+
+            self.assertTrue(websocket.accepted)
+            self.assertEqual(writer.writes, [b"\x03\x01\x00\x00\x00\x00\x05\xa0\x03\xc0"])
+
+        asyncio.run(run_test())
+
+    def test_websocket_blocks_pointer_input_when_agent_controls_session(self) -> None:
+        async def run_test() -> None:
+            class _FakeWebSocket:
+                def __init__(self) -> None:
+                    self.closed_code = None
+                    self.accepted = False
+                    self.messages = [
+                        {"type": "websocket.receive", "bytes": b"\x05\x01\x00\x10\x00\x20"},
+                        {"type": "websocket.disconnect"},
+                    ]
 
                 async def accept(self) -> None:
                     self.accepted = True
@@ -376,5 +443,62 @@ class BrowserAppTests(unittest.TestCase):
 
             self.assertTrue(websocket.accepted)
             self.assertEqual(writer.writes, [])
+
+        asyncio.run(run_test())
+
+    def test_websocket_records_viewer_activity_during_human_control(self) -> None:
+        async def run_test() -> None:
+            class _FakeWebSocket:
+                def __init__(self) -> None:
+                    self.closed_code = None
+                    self.accepted = False
+                    self.messages = [
+                        {"type": "websocket.receive", "bytes": b"\x03\x01\x00\x00\x00\x00\x05\xa0\x03\xc0"},
+                        {"type": "websocket.disconnect"},
+                    ]
+
+                async def accept(self) -> None:
+                    self.accepted = True
+
+                async def receive(self):
+                    return self.messages.pop(0)
+
+                async def send_bytes(self, data: bytes) -> None:
+                    return None
+
+                async def close(self, code=None) -> None:
+                    self.closed_code = code
+
+            class _FakeReader:
+                async def read(self, n: int) -> bytes:
+                    await asyncio.Future()
+
+            class _FakeWriter:
+                def write(self, data: bytes) -> None:
+                    return None
+
+                async def drain(self) -> None:
+                    return None
+
+                def close(self) -> None:
+                    return None
+
+                async def wait_closed(self) -> None:
+                    return None
+
+            websocket = _FakeWebSocket()
+
+            with mock.patch.object(browser_app, "manager", browser_app.manager), mock.patch.object(
+                browser_app.manager, "validate_viewer_token", new=mock.AsyncMock(return_value=True)
+            ), mock.patch.object(
+                browser_app.manager, "can_viewer_interact", new=mock.AsyncMock(return_value=True)
+            ), mock.patch.object(
+                browser_app.asyncio,
+                "open_connection",
+                new=mock.AsyncMock(return_value=(_FakeReader(), _FakeWriter())),
+            ):
+                await browser_app.vnc_websocket(websocket, "viewer-ou_test")
+
+            self.assertEqual(browser_app.manager.viewer_activity_tokens, ["viewer-ou_test"])
 
         asyncio.run(run_test())

@@ -132,6 +132,12 @@ class BrowserSessionManager:
             record = self._active_session_for_viewer_token_locked(viewer_token)
             return bool(record and record.controller == HUMAN_CONTROLLER)
 
+    async def record_viewer_activity(self, viewer_token: str) -> None:
+        async with self._lock:
+            record = self._active_session_for_viewer_token_locked(viewer_token)
+            if record and record.controller == HUMAN_CONTROLLER:
+                record.last_used_at = time.monotonic()
+
     async def takeover(self, open_id: str) -> Dict[str, Any]:
         async with self._lock:
             await self._expire_active_session_for_open_id_locked(open_id)

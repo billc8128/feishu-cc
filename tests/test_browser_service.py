@@ -335,6 +335,42 @@ class BrowserServiceTests(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_viewer_activity_refreshes_human_controlled_session_before_idle_expiry(self) -> None:
+        async def run_test() -> None:
+            clock = {"now": 100.0}
+
+            def fake_monotonic() -> float:
+                return clock["now"]
+
+            manager = browser_service.BrowserSessionManager(
+                data_dir=Path(self._tmp.name),
+                driver=self.driver,
+                idle_timeout_seconds=5,
+                max_session_ttl_seconds=1800,
+            )
+
+            with mock.patch.object(browser_service.time, "monotonic", side_effect=fake_monotonic):
+                session = await manager.ensure_session("ou_a", public_base_url="https://browser.example.com")
+                await manager.takeover("ou_a")
+                takeover_last_used_at = manager._sessions["ou_a"].last_used_at
+
+                clock["now"] = 104.9
+                await manager.record_viewer_activity(session["viewer_token"])
+                refreshed_last_used_at = manager._sessions["ou_a"].last_used_at
+
+                clock["now"] = 105.1
+                active = await manager.ensure_session(
+                    "ou_a", public_base_url="https://browser.example.com"
+                )
+
+            self.assertEqual(active["state"], "active")
+            self.assertEqual(active["controller"], "human")
+            self.assertEqual(self.driver.stopped, [])
+            self.assertEqual(len(self.driver.started), 1)
+            self.assertGreater(refreshed_last_used_at, takeover_last_used_at)
+
+        asyncio.run(run_test())
+
     def test_takeover_expires_stale_session_before_transition(self) -> None:
         async def run_test() -> None:
             clock = {"now": 100.0}
