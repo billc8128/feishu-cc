@@ -67,6 +67,7 @@ class BrowserToolsTests(unittest.TestCase):
             self.assertFalse(result.get("is_error", False))
             self.assertIn("https://viewer/session-1", result["content"][0]["text"])
             self.assertIn("/browser yes", send_text.await_args_list[0].args[1])
+            self.assertIn("旁观/接管链接", send_text.await_args_list[1].args[1])
 
         asyncio.run(run_test())
 
@@ -109,6 +110,33 @@ class BrowserToolsTests(unittest.TestCase):
 
             navigate.assert_awaited_once_with("ou_123", "https://example.com")
             self.assertIn("example.com", result["content"][0]["text"])
+
+        asyncio.run(run_test())
+
+    def test_browser_tools_report_takeover_pause_with_resume_message(self) -> None:
+        async def run_test() -> None:
+            server = browser_tools.build_browser_mcp("ou_123")
+            tool_names = [
+                ("browser_navigate", {"url": "https://example.com"}),
+                ("browser_click", {"selector": "#cta"}),
+                ("browser_type", {"selector": "#q", "text": "hello", "clear": True}),
+                ("browser_wait", {"selector": "#ready", "timeout_ms": 500}),
+                ("browser_snapshot", {}),
+            ]
+
+            for tool_name, args in tool_names:
+                with self.subTest(tool=tool_name):
+                    tool_fn = server["tools"][tool_name]
+                    patch_target = f"agent.tools_browser.browser_client.{tool_name.removeprefix('browser_')}"
+                    with patch(
+                        patch_target,
+                        new=AsyncMock(side_effect=RuntimeError("BROWSER_PAUSED_FOR_TAKEOVER")),
+                    ):
+                        result = await tool_fn(args)
+
+                    self.assertTrue(result["is_error"])
+                    self.assertIn("Resume Agent", result["content"][0]["text"])
+                    self.assertIn("浏览器已交给你", result["content"][0]["text"])
 
         asyncio.run(run_test())
 

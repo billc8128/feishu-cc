@@ -11,6 +11,8 @@ from agent.browser_client import browser_client
 from config import settings
 from feishu.client import feishu_client
 
+TAKEOVER_PAUSED_ERROR = "BROWSER_PAUSED_FOR_TAKEOVER"
+
 
 async def _wait_until_session_ready(open_id: str) -> Dict[str, Any]:
     deadline = asyncio.get_running_loop().time() + settings.browser_queue_wait_timeout_seconds
@@ -28,6 +30,19 @@ def _tool_text(message: str, *, is_error: bool = False) -> Dict[str, Any]:
     if is_error:
         payload["is_error"] = True
     return payload
+
+
+def _takeover_pause_text() -> Dict[str, Any]:
+    return _tool_text(
+        "浏览器已交给你。处理完后点击浏览器页面里的 Resume Agent，我再继续。",
+        is_error=True,
+    )
+
+
+def _tool_error(message: str, exc: Exception) -> Dict[str, Any]:
+    if str(exc) == TAKEOVER_PAUSED_ERROR:
+        return _takeover_pause_text()
+    return _tool_text(f"{message}: {exc}", is_error=True)
 
 
 def build_browser_mcp(open_id: str):
@@ -96,7 +111,7 @@ def build_browser_mcp(open_id: str):
         if viewer_url:
             await feishu_client.send_text(
                 open_id,
-                "👀 浏览器已就绪。你可以打开下面的旁观链接实时查看 agent 的操作过程：\n"
+                "👀 浏览器已就绪。你可以打开下面的旁观/接管链接实时查看 agent 的操作过程：\n"
                 f"{viewer_url}",
             )
 
@@ -118,7 +133,7 @@ def build_browser_mcp(open_id: str):
         try:
             result = await browser_client.navigate(open_id, url)
         except Exception as exc:
-            return _tool_text(f"Browser navigate failed: {exc}", is_error=True)
+            return _tool_error("Browser navigate failed", exc)
         return _tool_text(f"Navigated browser to {result.get('url', url)}")
 
     @tool(
@@ -133,7 +148,7 @@ def build_browser_mcp(open_id: str):
         try:
             await browser_client.click(open_id, selector)
         except Exception as exc:
-            return _tool_text(f"Browser click failed: {exc}", is_error=True)
+            return _tool_error("Browser click failed", exc)
         return _tool_text(f"Clicked selector: {selector}")
 
     @tool(
@@ -150,7 +165,7 @@ def build_browser_mcp(open_id: str):
         try:
             await browser_client.type(open_id, selector, text, clear=clear)
         except Exception as exc:
-            return _tool_text(f"Browser type failed: {exc}", is_error=True)
+            return _tool_error("Browser type failed", exc)
         return _tool_text(f"Typed into selector: {selector}")
 
     @tool(
@@ -165,7 +180,7 @@ def build_browser_mcp(open_id: str):
         try:
             await browser_client.wait(open_id, selector=selector, text=text, timeout_ms=timeout_ms)
         except Exception as exc:
-            return _tool_text(f"Browser wait failed: {exc}", is_error=True)
+            return _tool_error("Browser wait failed", exc)
         return _tool_text("Browser wait completed.")
 
     @tool(
@@ -177,7 +192,7 @@ def build_browser_mcp(open_id: str):
         try:
             result = await browser_client.snapshot(open_id)
         except Exception as exc:
-            return _tool_text(f"Browser snapshot failed: {exc}", is_error=True)
+            return _tool_error("Browser snapshot failed", exc)
         snapshot = result.get("snapshot") or {}
         lines = [
             f"title: {snapshot.get('title', '')}",
