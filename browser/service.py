@@ -120,6 +120,8 @@ class BrowserSessionManager:
         async with self._lock:
             await self._expire_active_session_for_open_id_locked(open_id)
             record = self._require_active_locked(open_id)
+            if record.controller == HUMAN_CONTROLLER:
+                return self._serialize(record)
             now = time.monotonic()
             record.last_used_at = now
             record.controller = HUMAN_CONTROLLER
@@ -131,6 +133,8 @@ class BrowserSessionManager:
         async with self._lock:
             await self._expire_active_session_for_open_id_locked(open_id)
             record = self._require_active_locked(open_id)
+            if record.controller == AGENT_CONTROLLER:
+                return self._serialize(record)
             now = time.monotonic()
             record.last_used_at = now
             record.controller = AGENT_CONTROLLER

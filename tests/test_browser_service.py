@@ -119,6 +119,37 @@ class BrowserServiceTests(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_takeover_is_idempotent_when_already_human_controlled(self) -> None:
+        async def run_test() -> None:
+            clock = {"now": 100.0}
+
+            def fake_monotonic() -> float:
+                return clock["now"]
+
+            manager = browser_service.BrowserSessionManager(
+                data_dir=Path(self._tmp.name),
+                driver=self.driver,
+                idle_timeout_seconds=300,
+                max_session_ttl_seconds=1800,
+            )
+
+            with mock.patch.object(browser_service.time, "monotonic", side_effect=fake_monotonic):
+                await manager.ensure_session("ou_a", public_base_url="https://browser.example.com")
+                first = await manager.takeover("ou_a")
+                first_record = manager._sessions["ou_a"]
+
+                clock["now"] = 101.0
+                second = await manager.takeover("ou_a")
+                second_record = manager._sessions["ou_a"]
+
+            self.assertEqual(second, first)
+            self.assertEqual(second_record.controller, first_record.controller)
+            self.assertEqual(second_record.paused_reason, first_record.paused_reason)
+            self.assertEqual(second_record.last_control_change_at, first_record.last_control_change_at)
+            self.assertEqual(second_record.last_used_at, first_record.last_used_at)
+
+        asyncio.run(run_test())
+
     def test_takeover_refreshes_activity_before_idle_expiry(self) -> None:
         async def run_test() -> None:
             clock = {"now": 100.0}
@@ -193,6 +224,37 @@ class BrowserServiceTests(unittest.TestCase):
             self.assertEqual(session["paused_reason"], "")
             self.assertEqual(stored["controller"], "agent")
             self.assertEqual(stored["paused_reason"], "")
+
+        asyncio.run(run_test())
+
+    def test_resume_is_idempotent_when_already_agent_controlled(self) -> None:
+        async def run_test() -> None:
+            clock = {"now": 200.0}
+
+            def fake_monotonic() -> float:
+                return clock["now"]
+
+            manager = browser_service.BrowserSessionManager(
+                data_dir=Path(self._tmp.name),
+                driver=self.driver,
+                idle_timeout_seconds=300,
+                max_session_ttl_seconds=1800,
+            )
+
+            with mock.patch.object(browser_service.time, "monotonic", side_effect=fake_monotonic):
+                await manager.ensure_session("ou_a", public_base_url="https://browser.example.com")
+                first = await manager.resume("ou_a")
+                first_record = manager._sessions["ou_a"]
+
+                clock["now"] = 201.0
+                second = await manager.resume("ou_a")
+                second_record = manager._sessions["ou_a"]
+
+            self.assertEqual(second, first)
+            self.assertEqual(second_record.controller, first_record.controller)
+            self.assertEqual(second_record.paused_reason, first_record.paused_reason)
+            self.assertEqual(second_record.last_control_change_at, first_record.last_control_change_at)
+            self.assertEqual(second_record.last_used_at, first_record.last_used_at)
 
         asyncio.run(run_test())
 
