@@ -2,6 +2,10 @@
 set -ex
 exec 2>&1
 
+if [ "${SERVICE_ROLE:-}" = "browser" ]; then
+    exec bash /app/browser/start.sh
+fi
+
 # ---- 第一阶段:root 进来 → 修 /data 所有权 → gosu 切到 app 用户重入 ----
 if [ "$(id -u)" = "0" ]; then
     echo "===== bootstrap (root) ====="

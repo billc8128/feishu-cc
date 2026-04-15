@@ -14,6 +14,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     npm \
     build-essential \
     ffmpeg \
+    chromium \
+    xvfb \
+    x11vnc \
+    fluxbox \
+    novnc \
+    fonts-wqy-zenhei \
     gosu \
  && rm -rf /var/lib/apt/lists/*
 
@@ -26,10 +32,13 @@ ENV PYTHONUNBUFFERED=1 \
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
+COPY browser/requirements.txt /tmp/browser-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/browser-requirements.txt
+
 COPY . .
 
 # 兜底 chmod,确保 start.sh 可执行
-RUN chmod +x /app/start.sh && ls -la /app/start.sh
+RUN chmod +x /app/start.sh /app/browser/start.sh && ls -la /app/start.sh
 
 # Claude Code CLI 拒绝以 root 跑 bypassPermissions 模式(安全护栏)。
 # 创建非 root 用户 app,start.sh 会用 gosu 切到 app 跑实际服务。
