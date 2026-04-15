@@ -5,7 +5,13 @@ from html import escape
 from urllib.parse import quote
 
 
-def render_viewer_page(*, viewer_token: str) -> str:
+def render_viewer_page(
+    *,
+    viewer_token: str,
+    controller: str,
+    status_text: str,
+    interactive: bool,
+) -> str:
     token_path = quote(viewer_token, safe="")
     websocket_path = quote(f"ws/{viewer_token}", safe="/")
     spectator_src = (
@@ -14,9 +20,15 @@ def render_viewer_page(*, viewer_token: str) -> str:
     interactive_src = f"/novnc/vnc_lite.html?path={websocket_path}&autoconnect=1&resize=scale"
     takeover_path = f"/view/{token_path}/takeover"
     resume_path = f"/view/{token_path}/resume"
+    takeover_disabled = " disabled" if controller != "agent" else ""
+    resume_disabled = " disabled" if controller != "human" else ""
+    initial_src = interactive_src if interactive else spectator_src
     viewer_state_json = json.dumps(
         {
             "viewerToken": viewer_token,
+            "controller": controller,
+            "interactive": interactive,
+            "statusText": status_text,
             "spectatorPath": spectator_src,
             "interactivePath": interactive_src,
             "takeoverPath": takeover_path,
@@ -78,14 +90,14 @@ def render_viewer_page(*, viewer_token: str) -> str:
   <body>
     <div class="shell">
       <div class="toolbar">
-        <div class="status" id="viewer-status">Viewer ready. Use Take Over to pause the agent or Resume Agent to hand control back.</div>
-        <button id="takeover-button" type="button">Take Over</button>
-        <button id="resume-button" type="button">Resume Agent</button>
+        <div class="status" id="viewer-status">{escape(status_text)}</div>
+        <button id="takeover-button" type="button"{takeover_disabled}>Take Over</button>
+        <button id="resume-button" type="button"{resume_disabled}>Resume Agent</button>
       </div>
       <iframe
         id="viewer-frame"
         title="Browser session"
-        src="{escape(spectator_src, quote=True)}"
+        src="{escape(initial_src, quote=True)}"
         allow="clipboard-read; clipboard-write"
       ></iframe>
     </div>
@@ -98,7 +110,25 @@ def render_viewer_page(*, viewer_token: str) -> str:
       const takeoverButton = document.getElementById("takeover-button");
       const resumeButton = document.getElementById("resume-button");
 
-      async function sendControlRequest(url, nextSrc, message) {{
+      function applyControlState(controller, statusText) {{
+        viewerState.controller = controller;
+        viewerState.interactive = controller === "human";
+        frameNode.src = viewerState.interactive
+          ? viewerState.interactivePath
+          : viewerState.spectatorPath;
+        statusNode.textContent = statusText;
+        if (controller === "human") {{
+          takeoverButton.disabled = true;
+          resumeButton.disabled = false;
+          return;
+        }}
+        takeoverButton.disabled = false;
+        resumeButton.disabled = true;
+      }}
+
+      applyControlState(viewerState.controller, viewerState.statusText);
+
+      async function sendControlRequest(url, message) {{
         statusNode.textContent = "Updating control...";
         try {{
           const response = await fetch(url, {{ method: "POST" }});
@@ -112,8 +142,7 @@ def render_viewer_page(*, viewer_token: str) -> str:
             statusNode.textContent = payload.detail || "Unable to update control.";
             return;
           }}
-          frameNode.src = nextSrc;
-          statusNode.textContent = message;
+          applyControlState(payload.controller || viewerState.controller, message);
         }} catch (error) {{
           statusNode.textContent = "Connection issue. Please try again.";
         }}
@@ -122,7 +151,6 @@ def render_viewer_page(*, viewer_token: str) -> str:
       takeoverButton.addEventListener("click", () => {{
         void sendControlRequest(
           viewerState.takeoverPath,
-          viewerState.interactivePath,
           "Human takeover active. Agent control is paused."
         );
       }});
@@ -130,7 +158,6 @@ def render_viewer_page(*, viewer_token: str) -> str:
       resumeButton.addEventListener("click", () => {{
         void sendControlRequest(
           viewerState.resumePath,
-          viewerState.spectatorPath,
           "Agent control resumed. Viewer is back in spectator mode."
         );
       }});

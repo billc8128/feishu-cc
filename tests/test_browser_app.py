@@ -1,6 +1,8 @@
+import asyncio
 import importlib
 import os
 import unittest
+from unittest import mock
 
 from fastapi.testclient import TestClient
 
@@ -27,6 +29,7 @@ class _FakeManager:
         self.viewer_takeover_token = None
         self.viewer_resume_token = None
         self.viewer_lookup_token = None
+        self.viewer_interact_token = None
 
     async def get_session(self, open_id: str):
         if open_id == self._session["open_id"]:
@@ -38,6 +41,15 @@ class _FakeManager:
         if viewer_token == self._session["viewer_token"]:
             return dict(self._session)
         return None
+
+    async def can_viewer_interact(self, viewer_token: str):
+        self.viewer_interact_token = viewer_token
+        if viewer_token != self._session["viewer_token"]:
+            return False
+        return self._session["controller"] == "human"
+
+    async def validate_viewer_token(self, viewer_token: str):
+        return viewer_token == self._session["viewer_token"]
 
     async def takeover(self, open_id: str):
         if self.raise_on_takeover:
@@ -93,6 +105,8 @@ class BrowserAppTests(unittest.TestCase):
         self.assertIn("view_only=1", response.text)
         self.assertIn("/view/viewer-ou_test/takeover", response.text)
         self.assertIn("/view/viewer-ou_test/resume", response.text)
+        self.assertIn('id="takeover-button" type="button"', response.text)
+        self.assertIn('id="resume-button" type="button" disabled', response.text)
         self.assertEqual(browser_app.manager.viewer_lookup_token, "viewer-ou_test")
 
     def test_view_starts_interactive_when_session_is_human_controlled(self) -> None:
@@ -107,6 +121,8 @@ class BrowserAppTests(unittest.TestCase):
             "Human takeover active. Agent control is paused.",
             response.text,
         )
+        self.assertIn('id="takeover-button" type="button" disabled', response.text)
+        self.assertIn('id="resume-button" type="button"', response.text)
         self.assertIn(
             'src="/novnc/vnc_lite.html?path=ws/viewer-ou_test&amp;autoconnect=1&amp;resize=scale"',
             response.text,
@@ -173,6 +189,20 @@ class BrowserAppTests(unittest.TestCase):
         self.assertEqual(response.json()["detail"], "no active browser session for this user")
         self.assertEqual(browser_app.manager.viewer_resume_token, "viewer-ou_test")
 
+    def test_viewer_takeover_endpoint_returns_conflict_for_unknown_token(self) -> None:
+        response = self.client.post("/view/viewer-missing/takeover")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"], "viewer session not found")
+        self.assertEqual(browser_app.manager.viewer_takeover_token, "viewer-missing")
+
+    def test_viewer_resume_endpoint_returns_conflict_for_unknown_token(self) -> None:
+        response = self.client.post("/view/viewer-missing/resume")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"], "viewer session not found")
+        self.assertEqual(browser_app.manager.viewer_resume_token, "viewer-missing")
+
     def test_view_unknown_viewer_token_returns_not_found(self) -> None:
         response = self.client.get("/view/viewer-missing")
 
@@ -202,11 +232,95 @@ class BrowserAppTests(unittest.TestCase):
         self.assertIn("try {", response.text)
         self.assertIn("catch (error)", response.text)
         self.assertIn("Connection issue. Please try again.", response.text)
+        self.assertIn("takeoverButton.disabled = true;", response.text)
+        self.assertIn("resumeButton.disabled = false;", response.text)
+        self.assertIn("takeoverButton.disabled = false;", response.text)
+        self.assertIn("resumeButton.disabled = true;", response.text)
 
     def test_render_viewer_page_escapes_quote_and_newline_tokens_safely(self) -> None:
-        html = viewer_page.render_viewer_page(viewer_token='viewer"\nline')
+        html = viewer_page.render_viewer_page(
+            viewer_token='viewer"\nline',
+            controller="agent",
+            status_text="Viewer ready. Use Take Over to pause the agent or Resume Agent to hand control back.",
+            interactive=False,
+        )
 
         self.assertIn('"viewerToken": "viewer\\"\\nline"', html)
         self.assertIn("/view/viewer%22%0Aline/takeover", html)
         self.assertIn("/view/viewer%22%0Aline/resume", html)
         self.assertIn("path=ws/viewer%22%0Aline&amp;autoconnect=1&amp;view_only=1&amp;resize=scale", html)
+
+    def test_render_viewer_page_reflects_initial_human_control_state(self) -> None:
+        html = viewer_page.render_viewer_page(
+            viewer_token="viewer-ou_test",
+            controller="human",
+            status_text="Human takeover active. Agent control is paused.",
+            interactive=True,
+        )
+
+        self.assertIn("Human takeover active. Agent control is paused.", html)
+        self.assertIn('"controller": "human"', html)
+        self.assertIn('"interactive": true', html)
+        self.assertIn('id="takeover-button" type="button" disabled', html)
+        self.assertIn('id="resume-button" type="button"', html)
+        self.assertIn(
+            'src="/novnc/vnc_lite.html?path=ws/viewer-ou_test&amp;autoconnect=1&amp;resize=scale"',
+            html,
+        )
+
+    def test_websocket_blocks_viewer_input_when_agent_controls_session(self) -> None:
+        async def run_test() -> None:
+            class _FakeWebSocket:
+                def __init__(self) -> None:
+                    self.closed_code = None
+                    self.accepted = False
+                    self.messages = [{"bytes": b"viewer-input"}, {"type": "websocket.disconnect"}]
+
+                async def accept(self) -> None:
+                    self.accepted = True
+
+                async def receive(self):
+                    return self.messages.pop(0)
+
+                async def send_bytes(self, data: bytes) -> None:
+                    return None
+
+                async def close(self, code=None) -> None:
+                    self.closed_code = code
+
+            class _FakeReader:
+                async def read(self, n: int) -> bytes:
+                    await asyncio.Future()
+
+            class _FakeWriter:
+                def __init__(self) -> None:
+                    self.writes = []
+
+                def write(self, data: bytes) -> None:
+                    self.writes.append(data)
+
+                async def drain(self) -> None:
+                    return None
+
+                def close(self) -> None:
+                    return None
+
+                async def wait_closed(self) -> None:
+                    return None
+
+            websocket = _FakeWebSocket()
+            writer = _FakeWriter()
+
+            with mock.patch.object(browser_app, "manager", browser_app.manager), mock.patch.object(
+                browser_app.manager, "validate_viewer_token", new=mock.AsyncMock(return_value=True)
+            ), mock.patch.object(
+                browser_app.manager, "can_viewer_interact", new=mock.AsyncMock(return_value=False)
+            ), mock.patch.object(
+                browser_app.asyncio, "open_connection", new=mock.AsyncMock(return_value=(_FakeReader(), writer))
+            ):
+                await browser_app.vnc_websocket(websocket, "viewer-ou_test")
+
+            self.assertTrue(websocket.accepted)
+            self.assertEqual(writer.writes, [])
+
+        asyncio.run(run_test())

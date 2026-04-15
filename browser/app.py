@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from html import escape
 from pathlib import Path
-from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket
 from fastapi.responses import HTMLResponse
@@ -83,36 +81,6 @@ def _viewer_initial_status(session: dict) -> str:
     if session["controller"] == "human":
         return "Human takeover active. Agent control is paused."
     return "Viewer ready. Use Take Over to pause the agent or Resume Agent to hand control back."
-
-
-def _viewer_iframe_src(viewer_token: str, *, interactive: bool) -> str:
-    websocket_path = quote(f"ws/{viewer_token}", safe="/")
-    suffix = "&autoconnect=1&resize=scale"
-    if not interactive:
-        suffix = "&autoconnect=1&view_only=1&resize=scale"
-    return f"/novnc/vnc_lite.html?path={websocket_path}{suffix}"
-
-
-def _render_viewer_page_for_session(session: dict) -> str:
-    html = render_viewer_page(viewer_token=session["viewer_token"])
-    if session["controller"] != "human":
-        return html
-
-    default_status = (
-        "Viewer ready. Use Take Over to pause the agent or Resume Agent to hand control back."
-    )
-    human_status = _viewer_initial_status(session)
-    spectator_src = escape(_viewer_iframe_src(session["viewer_token"], interactive=False), quote=True)
-    interactive_src = escape(_viewer_iframe_src(session["viewer_token"], interactive=True), quote=True)
-
-    html = html.replace(default_status, human_status, 1)
-    html = html.replace(
-        f'src="{spectator_src}"',
-        f'src="{interactive_src}"',
-        1,
-    )
-    return html
-
 
 @app.get("/health")
 async def health() -> dict:
@@ -209,7 +177,14 @@ async def view_session(viewer_token: str) -> HTMLResponse:
     session = await manager.get_session_by_viewer_token(viewer_token)
     if not session:
         raise HTTPException(status_code=404, detail="viewer session not found")
-    return HTMLResponse(_render_viewer_page_for_session(session))
+    return HTMLResponse(
+        render_viewer_page(
+            viewer_token=session["viewer_token"],
+            controller=session["controller"],
+            status_text=_viewer_initial_status(session),
+            interactive=session["controller"] == "human",
+        )
+    )
 
 
 @app.websocket("/ws/{viewer_token}")
@@ -228,11 +203,13 @@ async def vnc_websocket(websocket: WebSocket, viewer_token: str) -> None:
                 if message["type"] == "websocket.disconnect":
                     break
                 if message.get("bytes") is not None:
-                    writer.write(message["bytes"])
-                    await writer.drain()
+                    if await manager.can_viewer_interact(viewer_token):
+                        writer.write(message["bytes"])
+                        await writer.drain()
                 elif message.get("text") is not None:
-                    writer.write(message["text"].encode("utf-8"))
-                    await writer.drain()
+                    if await manager.can_viewer_interact(viewer_token):
+                        writer.write(message["text"].encode("utf-8"))
+                        await writer.drain()
         finally:
             writer.close()
             with contextlib.suppress(Exception):

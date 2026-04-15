@@ -236,6 +236,20 @@ class BrowserServiceTests(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_can_viewer_interact_reflects_controller_state(self) -> None:
+        async def run_test() -> None:
+            session = await self.manager.ensure_session(
+                "ou_a", public_base_url="https://browser.example.com"
+            )
+
+            self.assertFalse(await self.manager.can_viewer_interact(session["viewer_token"]))
+
+            await self.manager.takeover("ou_a")
+
+            self.assertTrue(await self.manager.can_viewer_interact(session["viewer_token"]))
+
+        asyncio.run(run_test())
+
     def test_resume_by_viewer_token_rejects_unknown_viewer_token(self) -> None:
         async def run_test() -> None:
             await self.manager.ensure_session("ou_a", public_base_url="https://browser.example.com")

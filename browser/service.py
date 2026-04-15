@@ -127,6 +127,11 @@ class BrowserSessionManager:
                 return None
             return self._serialize(record)
 
+    async def can_viewer_interact(self, viewer_token: str) -> bool:
+        async with self._lock:
+            record = self._active_session_for_viewer_token_locked(viewer_token)
+            return bool(record and record.controller == HUMAN_CONTROLLER)
+
     async def takeover(self, open_id: str) -> Dict[str, Any]:
         async with self._lock:
             await self._expire_active_session_for_open_id_locked(open_id)
