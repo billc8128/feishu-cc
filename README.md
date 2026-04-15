@@ -143,8 +143,11 @@ FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 FEISHU_ENCRYPT_KEY=你的_encrypt_key_可空
 FEISHU_VERIFICATION_TOKEN=你的_verification_token_可空
 
-# 这个先随便填一个占位字符串,部署完用 /whoami 拿到真实的再回来改
-FEISHU_ALLOWED_OPEN_IDS=ou_placeholder
+# 把你自己的 open_id 填成管理员。审批通知会主动发到你这里。
+FEISHU_ADMIN_OPEN_IDS=ou_your_open_id_here
+
+# 可选:历史兼容。这里的用户会在启动时直接预置为已开通。
+FEISHU_ALLOWED_OPEN_IDS=
 
 DATA_DIR=/data
 AGENT_MAX_DURATION_SECONDS=1800
@@ -178,16 +181,18 @@ Railway 会给你一个域名,比如 `my-feishu-cc-production.up.railway.app`。
 
 ---
 
-## 第六步:获取你的 open_id 并加白名单
+## 第六步:把你自己设成管理员
 
-1. 在飞书里给你刚发布的机器人发一句话:`/whoami`
-2. **机器人不会回话**(因为你不在白名单里),但 Railway 后台日志会打印一行:
-   ```
-   WARNING ... rejected open_id not in whitelist: ou_xxxxxxxxxxxxxxxxxx
-   ```
-3. 复制这个 `ou_xxx`,回 Railway 改 `FEISHU_ALLOWED_OPEN_IDS=ou_xxxxxxxxxxxxxxxxxx`
-4. Railway 自动重新部署
-5. 等 30 秒,再发 `/whoami`,这次它会回你的 open_id 了
+1. 先把 `FEISHU_ADMIN_OPEN_IDS` 临时填成你自己的 open_id
+2. 如果你还不知道自己的 open_id,有两个办法:
+   - 用飞书开放平台的调试工具/通讯录接口查
+   - 或者先沿用旧方式,把自己的 open_id 临时写进 `FEISHU_ALLOWED_OPEN_IDS`,部署后在飞书里发 `/whoami`,拿到真实值后再改回 `FEISHU_ADMIN_OPEN_IDS`
+3. 保存环境变量并等 Railway 自动重部署
+4. 在飞书里给 bot 发 `/help`,确认你能看到管理员命令:
+   - `/approve <open_id>`
+   - `/reject <open_id> [原因]`
+
+> 一旦你自己是管理员,后面其他同事就不需要再改环境变量了,他们直接 `/apply` 即可。
 
 ---
 
@@ -196,6 +201,7 @@ Railway 会给你一个域名,比如 `my-feishu-cc-production.up.railway.app`。
 现在你可以:
 
 - `/help` —— 看完整命令列表
+- `/status` —— 看自己的开通状态
 - `/project current` —— 看当前在哪个项目
 - `/project new mywebsite` —— 新建项目
 - `/project clone https://github.com/foo/bar.git` —— 克隆 git 仓库
@@ -213,7 +219,7 @@ Railway 会给你一个域名,比如 `my-feishu-cc-production.up.railway.app`。
 按这个顺序排查:
 1. Railway 后台 → "Deployments" → 看最新部署是否 success
 2. Railway 后台 → 服务 → "Logs" 标签 → 实时日志,看你发消息后有没有打印
-3. 如果日志显示 `rejected open_id`,白名单没配对
+3. 如果普通用户看到的是权限提示,让他发 `/apply`;如果你收不到审批通知,检查 `FEISHU_ADMIN_OPEN_IDS` 是否填对
 4. 如果日志显示 `decrypt failed`,飞书后台的 Encrypt Key 跟环境变量对不上
 5. 如果日志显示 `create message failed`,飞书 App Secret 错了或者权限没批
 
@@ -250,9 +256,12 @@ GLM API 比 Anthropic 便宜十倍以上,真正的大头其实是 Railway 的容
 
 ### 我想加同事用
 
-首版只支持单用户(你),代码已经按多用户结构准备好了。等你想扩展时:
-1. 把更多 open_id 加到 `FEISHU_ALLOWED_OPEN_IDS`(逗号分隔)
-2. 沙盒会自动按 open_id 隔离,互不可见
+现在已经支持审批式多人私聊:
+1. 同事先私聊 bot,发送 `/apply`
+2. bot 会主动私聊你一条审批通知
+3. 你在和 bot 的私聊里回复 `/approve <open_id>` 或 `/reject <open_id> [原因]`
+4. 审批结果会自动通知对方
+5. 每个用户的数据仍按 open_id 隔离,互不可见
 
 未来如果想支持群聊,要去 `feishu/events.py` 把 `is_allowed` 里"chat_type != p2p 直接拒绝"那段去掉,然后设计群聊的权限策略。这个目前没做。
 
@@ -263,10 +272,12 @@ GLM API 比 Anthropic 便宜十倍以上,真正的大头其实是 Railway 的容
 ```
 feishu-cc/
 ├── app.py                    # FastAPI 入口、命令路由
+├── auth/
+│   └── store.py              # 访问审批状态(SQLite)
 ├── config.py                 # 环境变量加载
 ├── feishu/
 │   ├── client.py             # 飞书 API 封装(基于 lark-oapi)
-│   └── events.py             # 事件解密、解析、去重、白名单
+│   └── events.py             # 事件解密、解析、去重、私聊过滤
 ├── agent/
 │   ├── runner.py             # Claude Agent SDK 集成核心
 │   ├── hooks.py              # 工具调用拦截(Bash 黑名单等)

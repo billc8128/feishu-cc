@@ -1,10 +1,10 @@
-"""飞书事件接收、解密、去重、白名单过滤。
+"""飞书事件接收、解密、去重、基础准入过滤。
 
 设计要点:
 - 用 lark-oapi 内置的事件验证/解密(URL 验证、AES 解密、签名校验)
 - event_id 用进程内 LRU 去重(飞书重试窗口几分钟,无需持久化)
-- 私聊白名单:只放行 settings.allowed_open_ids 中的 open_id
 - 群聊默认全部忽略(首版自用)
+- 细粒度访问控制在 app.py 里处理,这样未开通用户也能收到 /apply 引导
 """
 from __future__ import annotations
 
@@ -15,8 +15,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 import lark_oapi as lark
-
-from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -238,17 +236,10 @@ def is_duplicate(event_id: str) -> bool:
 
 
 def is_allowed(parsed: ParsedMessageEvent) -> bool:
-    """白名单 + 群聊禁用。"""
+    """只处理私聊事件;访问审批在分发层判断。"""
     # 首版禁用群聊
     if parsed.chat_type != "p2p":
         logger.info("ignoring non-p2p chat: chat_type=%s", parsed.chat_type)
-        return False
-
-    # 私聊白名单
-    if parsed.sender_open_id not in settings.allowed_open_ids:
-        logger.warning(
-            "rejected open_id not in whitelist: %s", parsed.sender_open_id
-        )
         return False
 
     return True

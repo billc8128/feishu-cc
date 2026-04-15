@@ -148,7 +148,15 @@ class MediaFlowTests(unittest.TestCase):
                 runner,
                 "handle_user_message",
                 new=AsyncMock(),
-            ) as handle_user_message:
+            ) as handle_user_message, patch.object(
+                app_module.auth_store,
+                "is_admin",
+                return_value=False,
+            ), patch.object(
+                app_module.auth_store,
+                "get_access_status",
+                return_value="approved",
+            ):
                 await app_module._dispatch(parsed)
                 handle_incoming_message.assert_awaited_once()
                 handle_user_message.assert_not_called()

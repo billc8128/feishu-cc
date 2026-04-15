@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     feishu_app_secret: str
     feishu_encrypt_key: str = ""
     feishu_verification_token: str = ""
+    feishu_admin_open_ids: str = ""
     feishu_allowed_open_ids: str = ""
 
     # 数据
@@ -39,6 +40,10 @@ class Settings(BaseSettings):
     @property
     def allowed_open_ids(self) -> List[str]:
         return [x.strip() for x in self.feishu_allowed_open_ids.split(",") if x.strip()]
+
+    @property
+    def admin_open_ids(self) -> List[str]:
+        return [x.strip() for x in self.feishu_admin_open_ids.split(",") if x.strip()]
 
     @property
     def data_path(self) -> Path:

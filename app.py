@@ -3,7 +3,7 @@
 职责:
   - 接收飞书 webhook,3 秒内 ack
   - URL 验证握手
-  - 事件去重 + 白名单
+  - 事件去重 + 私聊过滤
   - 命令分发(/project / /stop / /cron / 其他 → agent)
   - 异步 spawn agent 任务,不阻塞 webhook
   - 启动时初始化 scheduler 并恢复持久化的定时任务
@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from auth import store as auth_store
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -42,6 +43,7 @@ app = FastAPI(title="feishu-cc", version="0.1.0")
 
 @app.on_event("startup")
 async def on_startup() -> None:
+    auth_store._ensure_schema()
     from scheduler import store as scheduler_store
     from scheduler import runner as scheduler_runner
     from project import state as project_state
@@ -127,6 +129,40 @@ async def _dispatch(parsed: feishu_events.ParsedMessageEvent) -> None:
     text = parsed.text.strip()
 
     try:
+        is_admin = auth_store.is_admin(open_id)
+        access_status = auth_store.get_access_status(open_id)
+
+        if text == "/whoami":
+            await feishu_client.send_text(open_id, f"你的 open_id:{open_id}")
+            return
+
+        if text in ("/help", "/?"):
+            await feishu_client.send_text(
+                open_id,
+                _help_text(is_admin=is_admin, approved=(is_admin or access_status == "approved")),
+            )
+            return
+
+        if text == "/apply":
+            await _handle_apply_command(open_id, access_status)
+            return
+
+        if text == "/status":
+            await feishu_client.send_text(open_id, _access_status_text(access_status))
+            return
+
+        if is_admin and text.startswith("/approve"):
+            await _handle_approve_command(open_id, text)
+            return
+
+        if is_admin and text.startswith("/reject"):
+            await _handle_reject_command(open_id, text)
+            return
+
+        if not is_admin and access_status != "approved":
+            await feishu_client.send_text(open_id, _access_required_text(access_status))
+            return
+
         # /stop 中断当前 agent 任务
         if text in ("/stop", "/cancel", "/中断"):
             from agent import runner as agent_runner
@@ -136,16 +172,6 @@ async def _dispatch(parsed: feishu_events.ParsedMessageEvent) -> None:
                 await feishu_client.send_text(open_id, "🛑 正在中断…")
             else:
                 await feishu_client.send_text(open_id, "ℹ️ 当前没有正在运行的任务。")
-            return
-
-        # /whoami 显示自己的 open_id(便于配置白名单)
-        if text == "/whoami":
-            await feishu_client.send_text(open_id, f"你的 open_id:{open_id}")
-            return
-
-        # /help
-        if text in ("/help", "/?"):
-            await feishu_client.send_text(open_id, _help_text())
             return
 
         # /cron list / /cron delete <id>(查看和管理定时任务)
@@ -228,16 +254,128 @@ async def _handle_cron_command(open_id: str, text: str) -> None:
     )
 
 
-def _help_text() -> str:
-    return (
-        "🤖 飞书 Claude Code 帮助\n"
-        "\n"
-        "直接发消息就是跟 Claude 对话。常用命令:\n"
-        "  /project           项目管理(list/switch/new/clone/delete)\n"
-        "  /cron              定时任务管理\n"
-        "  /stop              中断当前正在跑的任务\n"
-        "  /whoami            查看自己的 open_id\n"
-        "  /help              本帮助\n"
-        "\n"
-        "首次使用默认在 scratch 项目里;输入 /project new 我的项目 创建一个正式项目。"
+async def _handle_apply_command(open_id: str, access_status: str) -> None:
+    before = access_status
+    user = auth_store.request_access(open_id)
+
+    if user.is_admin or user.status == "approved":
+        await feishu_client.send_text(open_id, "✅ 你已经开通，可以直接使用这个 bot。")
+        return
+
+    if before == "pending":
+        await feishu_client.send_text(open_id, "🕒 你的申请还在审批中，请等待管理员处理。")
+        return
+
+    await feishu_client.send_text(
+        open_id,
+        "📝 已提交开通申请。审批通过后，我会主动通知你。",
     )
+    await _notify_admins(
+        "[审批] 收到新的开通申请\n"
+        f"open_id: {open_id}\n"
+        f"批准: /approve {open_id}\n"
+        f"拒绝: /reject {open_id} 原因",
+    )
+
+
+async def _handle_approve_command(admin_open_id: str, text: str) -> None:
+    parts = text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await feishu_client.send_text(admin_open_id, "用法:/approve <open_id>")
+        return
+
+    target_open_id = parts[1].strip()
+    auth_store.approve_user(target_open_id, admin_open_id)
+    await feishu_client.send_text(
+        target_open_id,
+        "✅ 你的使用权限已开通。现在可以直接给我发消息了。",
+    )
+    await feishu_client.send_text(
+        admin_open_id,
+        f"[审批] 已批准 {target_open_id}",
+    )
+
+
+async def _handle_reject_command(admin_open_id: str, text: str) -> None:
+    parts = text.split(maxsplit=2)
+    if len(parts) < 2 or not parts[1].strip():
+        await feishu_client.send_text(admin_open_id, "用法:/reject <open_id> [原因]")
+        return
+
+    target_open_id = parts[1].strip()
+    reason = parts[2].strip() if len(parts) >= 3 else ""
+    auth_store.reject_user(target_open_id, admin_open_id, reason or None)
+
+    message = "❌ 你的开通申请未通过。"
+    if reason:
+        message += f"\n原因:{reason}"
+    message += "\n如需重新申请，发送 /apply 即可。"
+    await feishu_client.send_text(target_open_id, message)
+    await feishu_client.send_text(
+        admin_open_id,
+        f"[审批] 已拒绝 {target_open_id}" + (f"\n原因:{reason}" if reason else ""),
+    )
+
+
+async def _notify_admins(text: str) -> None:
+    for admin_open_id in auth_store.list_admin_open_ids():
+        await feishu_client.send_text(admin_open_id, text)
+
+
+def _access_required_text(access_status: str) -> str:
+    if access_status == "pending":
+        return "🕒 你还在审批中。发送 /status 查看状态。"
+    if access_status == "rejected":
+        return "❌ 你当前未开通。发送 /apply 可重新提交申请。"
+    return "🔒 你还没有开通使用权限。发送 /apply 提交申请，发送 /status 查看进度。"
+
+
+def _access_status_text(access_status: str) -> str:
+    if access_status == "approved":
+        return "✅ 当前状态: 已开通"
+    if access_status == "pending":
+        return "🕒 当前状态: 审批中"
+    if access_status == "rejected":
+        return "❌ 当前状态: 未通过，可发送 /apply 重新申请"
+    return "🔒 当前状态: 未申请，发送 /apply 提交开通申请"
+
+
+def _help_text(*, is_admin: bool, approved: bool) -> str:
+    if not approved:
+        return (
+            "🤖 飞书 Claude Code 帮助\n"
+            "\n"
+            "你还没有开通使用权限。可用命令:\n"
+            "  /apply             提交开通申请\n"
+            "  /status            查看审批状态\n"
+            "  /whoami            查看自己的 open_id\n"
+            "  /help              本帮助\n"
+        )
+
+    lines = [
+        "🤖 飞书 Claude Code 帮助",
+        "",
+        "直接发消息就是跟 Claude 对话。常用命令:",
+        "  /project           项目管理(list/switch/new/clone/delete)",
+        "  /cron              定时任务管理",
+        "  /stop              中断当前正在跑的任务",
+        "  /status            查看自己的开通状态",
+        "  /whoami            查看自己的 open_id",
+        "  /help              本帮助",
+    ]
+    if is_admin:
+        lines.extend(
+            [
+                "",
+                "管理员命令:",
+                "  /approve <open_id>         批准用户开通",
+                "  /reject <open_id> [原因]   拒绝用户开通",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "首次使用默认在 scratch 项目里;输入 /project new 我的项目 创建一个正式项目。",
+        ]
+    )
+    return "\n".join(lines)
