@@ -7,11 +7,9 @@ from typing import Any, Dict
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from agent import browser_approval
-from agent.browser_client import browser_client
+from agent.browser_client import BrowserPausedForTakeoverError, browser_client
 from config import settings
 from feishu.client import feishu_client
-
-TAKEOVER_PAUSED_ERROR = "BROWSER_PAUSED_FOR_TAKEOVER"
 
 
 async def _wait_until_session_ready(open_id: str) -> Dict[str, Any]:
@@ -40,7 +38,7 @@ def _takeover_pause_text() -> Dict[str, Any]:
 
 
 def _tool_error(message: str, exc: Exception) -> Dict[str, Any]:
-    if str(exc) == TAKEOVER_PAUSED_ERROR:
+    if isinstance(exc, BrowserPausedForTakeoverError):
         return _takeover_pause_text()
     return _tool_text(f"{message}: {exc}", is_error=True)
 
@@ -51,7 +49,7 @@ def build_browser_mcp(open_id: str):
         "Open or reuse the current user's browser session. If no session exists, "
         "ask the user for browser permission in Feishu, wait for /browser yes or "
         "/browser no, then create or reuse the browser session. Returns the live "
-        "spectator URL when ready. Use this before any other browser_* tool.",
+        "viewer/takeover URL when ready. Use this before any other browser_* tool.",
         {"reason": str},
     )
     async def browser_open(args: Dict[str, Any]) -> Dict[str, Any]:

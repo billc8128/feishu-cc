@@ -6,7 +6,11 @@ import types
 import unittest
 from unittest.mock import AsyncMock, patch
 
+import httpx
+
 os.environ.setdefault("ANTHROPIC_AUTH_TOKEN", "test-token")
+os.environ.setdefault("BROWSER_SERVICE_BASE_URL", "https://browser.example.com")
+os.environ.setdefault("BROWSER_SERVICE_TOKEN", "browser-token")
 os.environ.setdefault("FEISHU_APP_ID", "test-app-id")
 os.environ.setdefault("FEISHU_APP_SECRET", "test-app-secret")
 
@@ -36,10 +40,116 @@ def _install_sdk_stub() -> None:
 
 
 _install_sdk_stub()
+browser_client_module = importlib.import_module("agent.browser_client")
 browser_tools = importlib.import_module("agent.tools_browser")
 
 
+class _FakeAsyncClient:
+    def __init__(self, request_handler, *args, **kwargs) -> None:
+        self._request_handler = request_handler
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def request(self, method, url, *, json=None, headers=None):
+        return await self._request_handler(method, url, json=json, headers=headers)
+
+
+class BrowserServiceClientTests(unittest.TestCase):
+    def test_client_translates_takeover_pause_to_typed_error(self) -> None:
+        async def run_test() -> None:
+            client = browser_client_module.BrowserServiceClient()
+
+            async def request_handler(method, url, *, json=None, headers=None):
+                return httpx.Response(
+                    409,
+                    json={"detail": "BROWSER_PAUSED_FOR_TAKEOVER"},
+                    request=httpx.Request(method, url, json=json, headers=headers),
+                )
+
+            with patch.object(
+                browser_client_module,
+                "httpx",
+                wraps=browser_client_module.httpx,
+            ) as httpx_module:
+                httpx_module.AsyncClient = lambda *args, **kwargs: _FakeAsyncClient(  # type: ignore[assignment]
+                    request_handler, *args, **kwargs
+                )
+                with self.assertRaises(browser_client_module.BrowserPausedForTakeoverError):
+                    await client.navigate("ou_123", "https://example.com")
+
+        asyncio.run(run_test())
+
+    def test_client_returns_none_for_allow_404(self) -> None:
+        async def run_test() -> None:
+            client = browser_client_module.BrowserServiceClient()
+
+            async def request_handler(method, url, *, json=None, headers=None):
+                return httpx.Response(
+                    404,
+                    json={"detail": "session not found"},
+                    request=httpx.Request(method, url, json=json, headers=headers),
+                )
+
+            with patch.object(
+                browser_client_module,
+                "httpx",
+                wraps=browser_client_module.httpx,
+            ) as httpx_module:
+                httpx_module.AsyncClient = lambda *args, **kwargs: _FakeAsyncClient(  # type: ignore[assignment]
+                    request_handler, *args, **kwargs
+                )
+                result = await client.get_session("ou_missing")
+
+            self.assertIsNone(result)
+
+        asyncio.run(run_test())
+
+    def test_client_takeover_and_resume_use_expected_endpoints(self) -> None:
+        async def run_test() -> None:
+            client = browser_client_module.BrowserServiceClient()
+            requests = []
+
+            async def request_handler(method, url, *, json=None, headers=None):
+                requests.append((method, url, json, headers))
+                return httpx.Response(
+                    200,
+                    json={"state": "active"},
+                    request=httpx.Request(method, url, json=json, headers=headers),
+                )
+
+            with patch.object(
+                browser_client_module,
+                "httpx",
+                wraps=browser_client_module.httpx,
+            ) as httpx_module:
+                httpx_module.AsyncClient = lambda *args, **kwargs: _FakeAsyncClient(  # type: ignore[assignment]
+                    request_handler, *args, **kwargs
+                )
+                await client.takeover("ou_123")
+                await client.resume("ou_123")
+
+            self.assertEqual(
+                [request[:2] for request in requests],
+                [
+                    ("POST", "https://browser.example.com/v1/sessions/ou_123/takeover"),
+                    ("POST", "https://browser.example.com/v1/sessions/ou_123/resume"),
+                ],
+            )
+
+        asyncio.run(run_test())
+
+
 class BrowserToolsTests(unittest.TestCase):
+    def test_browser_open_tool_description_mentions_view_or_takeover_link(self) -> None:
+        server = browser_tools.build_browser_mcp("ou_123")
+
+        self.assertIn("viewer", server["tools"]["browser_open"]._tool_description.lower())
+        self.assertNotIn("spectator URL", server["tools"]["browser_open"]._tool_description)
+
     def test_browser_open_requests_permission_and_returns_viewer_url(self) -> None:
         async def run_test() -> None:
             server = browser_tools.build_browser_mcp("ou_123")
@@ -130,7 +240,7 @@ class BrowserToolsTests(unittest.TestCase):
                     patch_target = f"agent.tools_browser.browser_client.{tool_name.removeprefix('browser_')}"
                     with patch(
                         patch_target,
-                        new=AsyncMock(side_effect=RuntimeError("BROWSER_PAUSED_FOR_TAKEOVER")),
+                        new=AsyncMock(side_effect=browser_client_module.BrowserPausedForTakeoverError()),
                     ):
                         result = await tool_fn(args)
 

@@ -7,6 +7,20 @@ import httpx
 
 from config import settings
 
+TAKEOVER_PAUSED_DETAIL = "BROWSER_PAUSED_FOR_TAKEOVER"
+
+
+class BrowserServiceError(RuntimeError):
+    def __init__(self, detail: str, *, status_code: int) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.status_code = status_code
+
+
+class BrowserPausedForTakeoverError(BrowserServiceError):
+    def __init__(self) -> None:
+        super().__init__(TAKEOVER_PAUSED_DETAIL, status_code=409)
+
 
 class BrowserServiceClient:
     def __init__(self) -> None:
@@ -36,6 +50,12 @@ class BrowserServiceClient:
                 return detail
 
         return response.text.strip() or f"browser service request failed: HTTP {response.status_code}"
+
+    def _raise_for_error_response(self, response: httpx.Response) -> None:
+        detail = self._error_detail(response)
+        if response.status_code == 409 and detail == TAKEOVER_PAUSED_DETAIL:
+            raise BrowserPausedForTakeoverError()
+        raise BrowserServiceError(detail, status_code=response.status_code)
 
     async def _session_post(
         self,
@@ -70,9 +90,9 @@ class BrowserServiceClient:
             if response.status_code == 404:
                 if allow_404:
                     return None
-                raise RuntimeError(self._error_detail(response))
+                self._raise_for_error_response(response)
             if response.is_error:
-                raise RuntimeError(self._error_detail(response))
+                self._raise_for_error_response(response)
             return response.json()
 
     async def ensure_session(self, open_id: str) -> Dict[str, Any]:
