@@ -36,7 +36,7 @@ class MediaAnalyzer:
 
         payload = await self._call_glm_vision(
             media_kind="image",
-            paths=[attachment.local_path],
+            media_items=[(attachment.local_path, attachment.mime_type)],
             user_text=user_text,
         )
         return self._normalize_analysis(
@@ -53,7 +53,7 @@ class MediaAnalyzer:
         try:
             payload = await self._call_glm_vision(
                 media_kind="video",
-                paths=[attachment.local_path],
+                media_items=[(attachment.local_path, attachment.mime_type)],
                 user_text=user_text,
             )
             return self._normalize_analysis(
@@ -67,7 +67,7 @@ class MediaAnalyzer:
                 raise
             payload = await self._call_glm_vision(
                 media_kind="image",
-                paths=frames,
+                media_items=[(frame, None) for frame in frames],
                 user_text=user_text,
             )
             return self._normalize_analysis(
@@ -80,12 +80,12 @@ class MediaAnalyzer:
         self,
         *,
         media_kind: str,
-        paths: list[Path],
+        media_items: list[tuple[Path, str | None]],
         user_text: str,
     ) -> dict:
         content = [{"type": "text", "text": _analysis_prompt(user_text)}]
-        for path in paths:
-            url = _path_to_data_url(path)
+        for path, mime_type in media_items:
+            url = _path_to_data_url(path, mime_type=mime_type)
             if media_kind == "video":
                 # `video_url` is inferred from Z.AI's multimodal chat-completions
                 # schema style; if the provider rejects it, callers fall back to
@@ -193,8 +193,8 @@ def _analysis_prompt(user_text: str) -> str:
     )
 
 
-def _path_to_data_url(path: Path) -> str:
-    mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+def _path_to_data_url(path: Path, mime_type: str | None = None) -> str:
+    mime_type = mime_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     return f"data:{mime_type};base64,{encoded}"
 

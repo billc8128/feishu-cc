@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import os
 import unittest
 from pathlib import Path
@@ -8,7 +9,7 @@ os.environ.setdefault("ANTHROPIC_AUTH_TOKEN", "test-token")
 os.environ.setdefault("FEISHU_APP_ID", "test-app-id")
 os.environ.setdefault("FEISHU_APP_SECRET", "test-app-secret")
 
-from media.analyze import MediaAnalyzer
+from media.analyze import MediaAnalyzer, _path_to_data_url
 from media.ingest import MediaAttachment
 
 
@@ -74,6 +75,23 @@ class MediaAnalyzeTests(unittest.TestCase):
                 self.assertTrue(result.fallback_used)
 
         asyncio.run(run_test())
+
+    def test_path_to_data_url_prefers_attachment_mime_type(self) -> None:
+        png_bytes = (
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR"
+            b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00"
+            b"\x90wS\xde"
+            b"\x00\x00\x00\x0cIDATx\x9cc\xf8\xff\xff?\x00\x05\xfe\x02\xfeA\r\x98\xdb"
+            b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        path = Path("/tmp/image-without-extension")
+
+        with patch.object(Path, "read_bytes", return_value=png_bytes):
+            data_url = _path_to_data_url(path, mime_type="image/png")
+
+        self.assertTrue(data_url.startswith("data:image/png;base64,"))
+        self.assertIn(base64.b64encode(png_bytes).decode("ascii"), data_url)
 
 
 if __name__ == "__main__":
