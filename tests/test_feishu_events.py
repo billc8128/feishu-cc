@@ -73,14 +73,46 @@ class ParseMessageEventTests(unittest.TestCase):
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed.attachments[0].kind, "video")
 
+    def test_parses_post_message_with_text_and_image(self) -> None:
+        body = {
+            "header": {"event_type": "im.message.receive_v1", "event_id": "evt-4"},
+            "event": {
+                "sender": {"sender_id": {"open_id": "ou_123"}},
+                "message": {
+                    "chat_id": "oc_1",
+                    "chat_type": "p2p",
+                    "message_id": "om_4",
+                    "message_type": "post",
+                    "content": (
+                        "{"
+                        "\"title\":\"\","
+                        "\"content\":["
+                        "[{\"tag\":\"text\",\"text\":\"这是图片说明：\"},"
+                        "{\"tag\":\"a\",\"text\":\"文档\",\"href\":\"https://example.com\"}],"
+                        "[{\"tag\":\"img\",\"image_key\":\"img_key\"}],"
+                        "[{\"tag\":\"text\",\"text\":\"请帮我看下\"}]"
+                        "]"
+                        "}"
+                    ),
+                },
+            },
+        }
+
+        parsed = parse_message_event(body)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.text, "这是图片说明： 文档 请帮我看下")
+        self.assertEqual(len(parsed.attachments), 1)
+        self.assertEqual(parsed.attachments[0].kind, "image")
+        self.assertEqual(parsed.attachments[0].file_key, "img_key")
+
     def test_allows_p2p_messages_without_static_whitelist(self) -> None:
         settings.feishu_allowed_open_ids = ""
         parsed = ParsedMessageEvent(
-            event_id="evt-4",
+            event_id="evt-5",
             sender_open_id="ou_unknown",
             chat_id="oc_1",
             chat_type="p2p",
-            message_id="om_4",
+            message_id="om_5",
             text="/apply",
             attachments=[],
         )
@@ -89,11 +121,11 @@ class ParseMessageEventTests(unittest.TestCase):
 
     def test_rejects_non_p2p_messages(self) -> None:
         parsed = ParsedMessageEvent(
-            event_id="evt-5",
+            event_id="evt-6",
             sender_open_id="ou_unknown",
             chat_id="oc_2",
             chat_type="group",
-            message_id="om_5",
+            message_id="om_6",
             text="/apply",
             attachments=[],
         )

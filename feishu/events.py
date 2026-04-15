@@ -117,6 +117,10 @@ def parse_message_event(body: dict) -> Optional[ParsedMessageEvent]:
     attachments: list[IncomingAttachment] = []
     if msg_type == "text":
         text = _parse_text_content(message)
+    elif msg_type == "post":
+        text, attachments = _parse_post_content(message)
+        if not text and not attachments:
+            return None
     elif msg_type == "image":
         attachment = _parse_image_attachment(message)
         if not attachment:
@@ -154,6 +158,83 @@ def _parse_text_content(message: dict) -> str:
     except json.JSONDecodeError:
         return ""
     return _strip_at_bot(content_obj.get("text", "").strip())
+
+
+def _parse_post_content(message: dict) -> tuple[str, list[IncomingAttachment]]:
+    try:
+        content_obj = json.loads(message.get("content", "{}"))
+    except json.JSONDecodeError:
+        return "", []
+
+    post = _unwrap_post_content(content_obj)
+    if not isinstance(post, dict):
+        return "", []
+
+    text_parts: list[str] = []
+    attachments: list[IncomingAttachment] = []
+
+    title = str(post.get("title", "")).strip()
+    if title:
+        text_parts.append(title)
+
+    rows = post.get("content", [])
+    if isinstance(rows, list):
+        for row in rows:
+            if isinstance(row, list):
+                _collect_post_row(row, text_parts, attachments)
+
+    return _strip_at_bot(" ".join(text_parts).strip()), attachments
+
+
+def _unwrap_post_content(content_obj: object) -> object:
+    if isinstance(content_obj, dict) and "content" in content_obj:
+        return content_obj
+
+    if isinstance(content_obj, dict):
+        for value in content_obj.values():
+            if isinstance(value, dict) and "content" in value:
+                return value
+
+    return content_obj
+
+
+def _collect_post_row(
+    row: list[object],
+    text_parts: list[str],
+    attachments: list[IncomingAttachment],
+) -> None:
+    for item in row:
+        if not isinstance(item, dict):
+            continue
+
+        tag = item.get("tag")
+        if tag == "text":
+            text = str(item.get("text", "")).strip()
+            if text:
+                text_parts.append(text)
+            continue
+
+        if tag == "a":
+            text = str(item.get("text") or item.get("href") or "").strip()
+            if text:
+                text_parts.append(text)
+            continue
+
+        if tag == "img":
+            image_key = item.get("image_key")
+            if image_key:
+                attachments.append(
+                    IncomingAttachment(
+                        kind="image",
+                        file_key=str(image_key),
+                        message_resource_type="image",
+                    )
+                )
+            continue
+
+        nested = item.get("elements")
+        if isinstance(nested, list):
+            _collect_post_row(nested, text_parts, attachments)
 
 
 def _parse_image_attachment(message: dict) -> IncomingAttachment | None:
