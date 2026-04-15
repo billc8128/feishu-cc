@@ -10,8 +10,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -206,6 +208,74 @@ def _encoded_cwd_dir(project_root: str) -> Path:
     return Path(home) / ".claude" / "projects" / encoded
 
 
+def _candidate_encoded_cwd_dirs(project_root: str) -> list[Path]:
+    """生成可能的 session 目录名。
+
+    Claude CLI 的实际编码规则和我们观测到的目录名并不总是完全一致，
+    例如 open_id 里的 "_" 可能被规范化成 "-"。这里先尝试几个廉价的
+    变体，再在找不到时走内容扫描兜底。
+    """
+    base = _encoded_cwd_dir(project_root)
+    names = [base.name]
+
+    normalized = base.name.replace("_", "-")
+    if normalized not in names:
+        names.append(normalized)
+
+    slugified = re.sub(r"[^A-Za-z0-9.-]+", "-", base.name)
+    if slugified not in names:
+        names.append(slugified)
+
+    return [base.parent / name for name in names]
+
+
+def _jsonl_matches_cwd(path: Path, project_root: str, line_limit: int = 50) -> bool:
+    """检查某个 session 文件是否属于目标 cwd。"""
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for idx, line in enumerate(f):
+                if idx >= line_limit:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("cwd") == project_root:
+                    return True
+    except Exception as exc:
+        logger.warning("failed to inspect session file %s: %s", path, exc)
+    return False
+
+
+def _find_session_file_for_cwd(project_root: str, session_id: str) -> Optional[Path]:
+    """在给定 cwd 下查找指定 session_id 对应的 transcript 文件。"""
+    base_dir = _encoded_cwd_dir(project_root).parent
+    if not base_dir.is_dir():
+        return None
+
+    filename = f"{session_id}.jsonl"
+    for d in _candidate_encoded_cwd_dirs(project_root):
+        candidate = d / filename
+        if candidate.is_file():
+            return candidate
+
+    try:
+        for candidate in base_dir.rglob(filename):
+            if _jsonl_matches_cwd(candidate, project_root):
+                return candidate
+    except Exception as exc:
+        logger.warning(
+            "failed to scan for session file %s under %s: %s",
+            filename,
+            base_dir,
+            exc,
+        )
+    return None
+
+
 def _latest_session_id_for_cwd(project_root: str) -> Optional[str]:
     """扫描这个 cwd 对应的 projects 子目录,找 mtime 最新的 .jsonl,
     抠出 session_id(文件名去掉 .jsonl)。没有文件就返回 None。
@@ -214,23 +284,98 @@ def _latest_session_id_for_cwd(project_root: str) -> Optional[str]:
     依赖一个 "bridge pointer" 文件,REPL 模式才会写,SDK 的 stream-json
     模式不写,所以 --continue 对我们无效。自己扫 jsonl 最稳。
     """
-    d = _encoded_cwd_dir(project_root)
-    if not d.is_dir():
+    base_dir = _encoded_cwd_dir(project_root).parent
+    if not base_dir.is_dir():
+        logger.info("session lookup skipped: projects dir missing for cwd=%s", project_root)
         return None
-    try:
-        candidates = sorted(
-            d.glob("*.jsonl"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-    except Exception as exc:
-        logger.warning("failed to list session files in %s: %s", d, exc)
-        return None
+
+    seen: set[Path] = set()
+    candidates: list[Path] = []
+    matched_dirs: list[str] = []
+
+    for d in _candidate_encoded_cwd_dirs(project_root):
+        if not d.is_dir():
+            continue
+        matched_dirs.append(str(d))
+        try:
+            for path in d.glob("*.jsonl"):
+                if path not in seen:
+                    seen.add(path)
+                    candidates.append(path)
+        except Exception as exc:
+            logger.warning("failed to list session files in %s: %s", d, exc)
+
+    fallback_used = False
     if not candidates:
+        fallback_used = True
+        try:
+            for path in base_dir.rglob("*.jsonl"):
+                if path in seen:
+                    continue
+                if _jsonl_matches_cwd(path, project_root):
+                    seen.add(path)
+                    candidates.append(path)
+        except Exception as exc:
+            logger.warning("failed to scan session files under %s: %s", base_dir, exc)
+
+    if not candidates:
+        logger.info(
+            "session lookup found no candidates for cwd=%s dirs=%s fallback=%s",
+            project_root,
+            matched_dirs,
+            fallback_used,
+        )
         return None
+
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     latest = candidates[0]
+    logger.info(
+        "session lookup matched %d file(s) for cwd=%s dirs=%s fallback=%s latest=%s",
+        len(candidates),
+        project_root,
+        matched_dirs,
+        fallback_used,
+        latest,
+    )
     # session_id 是文件名去掉 .jsonl
     return latest.stem
+
+
+def _resume_session_id_for_project(
+    open_id: str, project: str, project_root: str
+) -> Optional[str]:
+    """优先恢复我们自己记录的 active session,找不到再回退到最新 transcript。"""
+    try:
+        active_session_id = project_state.get_active_session_id(open_id, project)
+    except Exception as exc:
+        logger.warning(
+            "failed to load active session for %s/%s: %s; falling back to latest transcript",
+            open_id[:12],
+            project,
+            exc,
+        )
+        return _latest_session_id_for_cwd(project_root)
+
+    if active_session_id:
+        active_path = _find_session_file_for_cwd(project_root, active_session_id)
+        if active_path:
+            logger.info(
+                "session resume using persisted active session %s for %s/%s (%s)",
+                active_session_id[:8],
+                open_id[:12],
+                project,
+                active_path,
+            )
+            return active_session_id
+        logger.warning(
+            "persisted active session %s for %s/%s not found under cwd=%s; falling back",
+            active_session_id,
+            open_id[:12],
+            project,
+            project_root,
+        )
+
+    return _latest_session_id_for_cwd(project_root)
 
 
 def _build_options(open_id: str, project: str, project_root: str) -> ClaudeAgentOptions:
@@ -252,7 +397,7 @@ def _build_options(open_id: str, project: str, project_root: str) -> ClaudeAgent
     schedule_server = build_schedule_mcp(open_id)
     deliver_server = build_deliver_mcp(open_id)
 
-    resume_id = _latest_session_id_for_cwd(project_root)
+    resume_id = _resume_session_id_for_project(open_id, project, project_root)
     if resume_id:
         logger.info(
             "resuming session %s for %s/%s",
@@ -377,6 +522,17 @@ async def _run_query(
                             )
 
             elif isinstance(msg, ResultMessage):
+                if msg.session_id:
+                    try:
+                        project_state.set_active_session_id(
+                            open_id, project, msg.session_id
+                        )
+                    except Exception:
+                        logger.exception(
+                            "failed to persist active session id for %s/%s",
+                            open_id[:12],
+                            project,
+                        )
                 # 一轮结束,发送累积的文本回复(用卡片渲染 Markdown)
                 final_text = "".join(text_buffer).strip()
                 if final_text:
