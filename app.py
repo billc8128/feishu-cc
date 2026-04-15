@@ -159,11 +159,20 @@ async def _dispatch(parsed: feishu_events.ParsedMessageEvent) -> None:
             await feishu_client.send_text(open_id, result.text)
             return
 
+        from agent import runner as agent_runner
+
+        if parsed.attachments:
+            await agent_runner.handle_incoming_message(
+                open_id,
+                text=text,
+                message_id=parsed.message_id,
+                attachments=parsed.attachments,
+            )
+            return
+
         # 其他全部丢给 agent
         if not text:
             return
-        from agent import runner as agent_runner
-
         await agent_runner.handle_user_message(open_id, text)
 
     except Exception as exc:

@@ -37,6 +37,10 @@ from agent.tools_deliver import build_deliver_mcp
 from agent.tools_schedule import build_schedule_mcp
 from config import settings
 from feishu.client import feishu_client
+from feishu.events import IncomingAttachment
+from media.analyze import MediaAnalyzer
+from media.ingest import ingest_attachments
+from media.prompting import build_media_turn_prompt
 from project import manager as project_manager
 from project import state as project_state
 
@@ -73,6 +77,8 @@ class _PooledClient:
 _pool: Dict[Tuple[str, str], _PooledClient] = {}
 _pool_lock = asyncio.Lock()
 _IDLE_TIMEOUT = 30 * 60  # 30 分钟空闲后释放
+_MAX_IMAGE_ATTACHMENTS = 4
+_MAX_VIDEO_ATTACHMENTS = 1
 
 
 def _key(open_id: str, project: str) -> Tuple[str, str]:
@@ -434,7 +440,67 @@ async def handle_user_message(open_id: str, text: str) -> None:
     """主入口:用户在飞书发了一条消息(已通过白名单),交给 agent 处理。"""
     project = project_state.get_current_project(open_id)
     project_root = str(project_manager.ensure_project_root(open_id, project))
+    await _handle_query_text(open_id, project, project_root, text)
 
+
+async def handle_incoming_message(
+    open_id: str,
+    *,
+    text: str,
+    message_id: str,
+    attachments: list[IncomingAttachment],
+) -> None:
+    project = project_state.get_current_project(open_id)
+    project_root_path = project_manager.ensure_project_root(open_id, project)
+    project_root = str(project_root_path)
+
+    if not attachments:
+        await _handle_query_text(open_id, project, project_root, text)
+        return
+
+    if not _attachments_within_limits(attachments):
+        await feishu_client.send_text(
+            open_id,
+            "⚠️ 当前仅支持每条消息最多 4 张图片或 1 个视频，请拆开发送。",
+        )
+        return
+
+    stored_attachments = await ingest_attachments(
+        feishu=feishu_client,
+        project_root=project_root_path,
+        message_id=message_id,
+        attachments=attachments,
+    )
+    if len(stored_attachments) != len(attachments):
+        await feishu_client.send_text(
+            open_id,
+            "❌ 下载飞书附件失败，请重试。",
+        )
+        return
+
+    analyzer = MediaAnalyzer()
+    analyses = []
+    for attachment in stored_attachments:
+        try:
+            analyses.append(await analyzer.analyze(attachment, user_text=text))
+        except Exception:
+            logger.exception("media analysis failed for %s", attachment.local_path)
+            analyses.append(None)
+
+    prompt = build_media_turn_prompt(
+        text=text,
+        attachments=stored_attachments,
+        analyses=analyses,
+    )
+    await _handle_query_text(open_id, project, project_root, prompt)
+
+
+async def _handle_query_text(
+    open_id: str,
+    project: str,
+    project_root: str,
+    text: str,
+) -> None:
     pooled = await _get_or_create_client(open_id, project, project_root)
 
     if pooled.busy:
@@ -459,6 +525,16 @@ async def handle_user_message(open_id: str, text: str) -> None:
         pooled.busy = False
         pooled.current_task = None
         pooled.last_used = time.monotonic()
+
+
+def _attachments_within_limits(attachments: list[IncomingAttachment]) -> bool:
+    image_count = sum(1 for attachment in attachments if attachment.kind == "image")
+    video_count = sum(1 for attachment in attachments if attachment.kind == "video")
+    if image_count > _MAX_IMAGE_ATTACHMENTS or video_count > _MAX_VIDEO_ATTACHMENTS:
+        return False
+    if image_count and video_count:
+        return False
+    return True
 
 
 async def interrupt_user(open_id: str) -> bool:
