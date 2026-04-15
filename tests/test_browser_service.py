@@ -105,6 +105,20 @@ class BrowserServiceTests(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_close_promotes_queued_user_with_its_own_base_url(self) -> None:
+        async def run_test() -> None:
+            await self.manager.ensure_session("ou_a", public_base_url="https://browser-a.example.com")
+            await self.manager.ensure_session("ou_b", public_base_url="https://browser-b.example.com")
+
+            await self.manager.close_session("ou_a", public_base_url="https://browser-a.example.com")
+            promoted = await self.manager.get_session("ou_b")
+
+            self.assertEqual(promoted["state"], "active")
+            self.assertEqual(promoted["viewer_url"], "https://browser-b.example.com/view/ou_b")
+            self.assertEqual(self.driver.started[-1][2], "https://browser-b.example.com")
+
+        asyncio.run(run_test())
+
     def test_takeover_switches_controller_to_human(self) -> None:
         async def run_test() -> None:
             await self.manager.ensure_session("ou_a", public_base_url="https://browser.example.com")

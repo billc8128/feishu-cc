@@ -227,7 +227,8 @@ class BrowserSessionManager:
         self._sessions.pop(open_id, None)
         if self._queue:
             next_open_id = self._queue.popleft()
-            await self._start_session_locked(next_open_id, public_base_url)
+            next_record = self._sessions[next_open_id]
+            await self._start_session_locked(next_open_id, next_record.public_base_url)
         return closed
 
     async def _start_session_locked(self, open_id: str, public_base_url: str) -> SessionRecord:
