@@ -45,6 +45,9 @@ class SessionRecord:
     profile_dir: Path
     created_at: float
     last_used_at: float
+    controller: str = "agent"
+    paused_reason: str = ""
+    last_control_change_at: float = 0.0
     viewer_token: str = ""
     viewer_url: str = ""
 
@@ -104,21 +107,40 @@ class BrowserSessionManager:
                 return None
             return self._serialize(record)
 
+    async def takeover(self, open_id: str) -> Dict[str, Any]:
+        async with self._lock:
+            record = self._require_active_locked(open_id)
+            record.controller = "human"
+            record.paused_reason = "takeover"
+            record.last_control_change_at = time.monotonic()
+            return self._serialize(record)
+
+    async def resume(self, open_id: str) -> Dict[str, Any]:
+        async with self._lock:
+            record = self._require_active_locked(open_id)
+            record.controller = "agent"
+            record.paused_reason = ""
+            record.last_control_change_at = time.monotonic()
+            return self._serialize(record)
+
     async def navigate(self, open_id: str, url: str) -> Dict[str, Any]:
         async with self._lock:
             record = self._require_active_locked(open_id)
+            self._require_agent_control_locked(record)
             record.last_used_at = time.monotonic()
             return await self._driver.navigate(open_id, url)
 
     async def click(self, open_id: str, selector: str) -> Dict[str, Any]:
         async with self._lock:
             record = self._require_active_locked(open_id)
+            self._require_agent_control_locked(record)
             record.last_used_at = time.monotonic()
             return await self._driver.click(open_id, selector)
 
     async def type(self, open_id: str, selector: str, text: str, *, clear: bool) -> Dict[str, Any]:
         async with self._lock:
             record = self._require_active_locked(open_id)
+            self._require_agent_control_locked(record)
             record.last_used_at = time.monotonic()
             return await self._driver.type(open_id, selector, text, clear=clear)
 
@@ -132,6 +154,7 @@ class BrowserSessionManager:
     ) -> Dict[str, Any]:
         async with self._lock:
             record = self._require_active_locked(open_id)
+            self._require_agent_control_locked(record)
             record.last_used_at = time.monotonic()
             return await self._driver.wait(
                 open_id,
@@ -143,6 +166,7 @@ class BrowserSessionManager:
     async def snapshot(self, open_id: str) -> Dict[str, Any]:
         async with self._lock:
             record = self._require_active_locked(open_id)
+            self._require_agent_control_locked(record)
             record.last_used_at = time.monotonic()
             return await self._driver.snapshot(open_id)
 
@@ -225,6 +249,9 @@ class BrowserSessionManager:
         payload: Dict[str, Any] = {
             "open_id": record.open_id,
             "state": record.state,
+            "controller": record.controller,
+            "paused_reason": record.paused_reason,
+            "last_control_change_at": record.last_control_change_at,
             "viewer_url": record.viewer_url,
             "viewer_token": record.viewer_token,
         }
@@ -243,3 +270,7 @@ class BrowserSessionManager:
         if not record or self._active_open_id != open_id or record.state != "active":
             raise RuntimeError("no active browser session for this user")
         return record
+
+    def _require_agent_control_locked(self, record: SessionRecord) -> None:
+        if record.controller != "agent":
+            raise RuntimeError("BROWSER_PAUSED_FOR_TAKEOVER")

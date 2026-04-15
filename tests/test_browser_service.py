@@ -89,6 +89,45 @@ class BrowserServiceTests(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_takeover_switches_controller_to_human(self) -> None:
+        async def run_test() -> None:
+            await self.manager.ensure_session("ou_a", public_base_url="https://browser.example.com")
+
+            session = await self.manager.takeover("ou_a")
+            stored = await self.manager.get_session("ou_a")
+
+            self.assertEqual(session["controller"], "human")
+            self.assertEqual(session["paused_reason"], "takeover")
+            self.assertEqual(stored["controller"], "human")
+            self.assertEqual(stored["paused_reason"], "takeover")
+
+        asyncio.run(run_test())
+
+    def test_resume_switches_controller_back_to_agent(self) -> None:
+        async def run_test() -> None:
+            await self.manager.ensure_session("ou_a", public_base_url="https://browser.example.com")
+            await self.manager.takeover("ou_a")
+
+            session = await self.manager.resume("ou_a")
+            stored = await self.manager.get_session("ou_a")
+
+            self.assertEqual(session["controller"], "agent")
+            self.assertEqual(session["paused_reason"], "")
+            self.assertEqual(stored["controller"], "agent")
+            self.assertEqual(stored["paused_reason"], "")
+
+        asyncio.run(run_test())
+
+    def test_browser_actions_fail_while_human_controls_session(self) -> None:
+        async def run_test() -> None:
+            await self.manager.ensure_session("ou_a", public_base_url="https://browser.example.com")
+            await self.manager.takeover("ou_a")
+
+            with self.assertRaisesRegex(RuntimeError, "BROWSER_PAUSED_FOR_TAKEOVER"):
+                await self.manager.navigate("ou_a", "https://example.com")
+
+        asyncio.run(run_test())
+
 
 if __name__ == "__main__":
     unittest.main()
