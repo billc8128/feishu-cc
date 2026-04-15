@@ -22,4 +22,4 @@ import browser.app
 print('browser imports ok')
 "
 
-exec uvicorn browser.app:app --host :: --port ${PORT} --workers 1 --log-level info
+exec uvicorn browser.app:app --host 0.0.0.0 --port ${PORT} --workers 1 --log-level info
