@@ -3,6 +3,7 @@ import importlib
 import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 os.environ.setdefault("BROWSER_SERVICE_TOKEN", "browser-token")
@@ -16,6 +17,7 @@ class _FakeDriver:
     def __init__(self) -> None:
         self.started = []
         self.stopped = []
+        self.navigated = []
 
     async def start(self, *, open_id: str, profile_dir: Path, public_base_url: str):
         self.started.append((open_id, str(profile_dir), public_base_url))
@@ -26,6 +28,10 @@ class _FakeDriver:
 
     async def stop(self, open_id: str) -> None:
         self.stopped.append(open_id)
+
+    async def navigate(self, open_id: str, url: str):
+        self.navigated.append((open_id, url))
+        return {"url": url}
 
 
 class BrowserServiceTests(unittest.TestCase):
@@ -103,6 +109,42 @@ class BrowserServiceTests(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_takeover_refreshes_activity_before_idle_expiry(self) -> None:
+        async def run_test() -> None:
+            clock = {"now": 100.0}
+
+            def fake_monotonic() -> float:
+                return clock["now"]
+
+            manager = browser_service.BrowserSessionManager(
+                data_dir=Path(self._tmp.name),
+                driver=self.driver,
+                idle_timeout_seconds=5,
+                max_session_ttl_seconds=1800,
+            )
+
+            with mock.patch.object(browser_service.time, "monotonic", side_effect=fake_monotonic):
+                await manager.ensure_session("ou_a", public_base_url="https://browser.example.com")
+                initial_last_used_at = manager._sessions["ou_a"].last_used_at
+
+                clock["now"] = 104.9
+                await manager.takeover("ou_a")
+                takeover_control_change_at = manager._sessions["ou_a"].last_control_change_at
+                takeover_last_used_at = manager._sessions["ou_a"].last_used_at
+
+                clock["now"] = 105.1
+                session = await manager.ensure_session(
+                    "ou_a", public_base_url="https://browser.example.com"
+                )
+
+            self.assertEqual(session["state"], "active")
+            self.assertEqual(self.driver.stopped, [])
+            self.assertEqual(len(self.driver.started), 1)
+            self.assertGreater(takeover_last_used_at, initial_last_used_at)
+            self.assertGreater(takeover_control_change_at, initial_last_used_at)
+
+        asyncio.run(run_test())
+
     def test_resume_switches_controller_back_to_agent(self) -> None:
         async def run_test() -> None:
             await self.manager.ensure_session("ou_a", public_base_url="https://browser.example.com")
@@ -115,6 +157,40 @@ class BrowserServiceTests(unittest.TestCase):
             self.assertEqual(session["paused_reason"], "")
             self.assertEqual(stored["controller"], "agent")
             self.assertEqual(stored["paused_reason"], "")
+
+        asyncio.run(run_test())
+
+    def test_resume_reenables_browser_actions_after_takeover(self) -> None:
+        async def run_test() -> None:
+            clock = {"now": 200.0}
+
+            def fake_monotonic() -> float:
+                return clock["now"]
+
+            manager = browser_service.BrowserSessionManager(
+                data_dir=Path(self._tmp.name),
+                driver=self.driver,
+                idle_timeout_seconds=5,
+                max_session_ttl_seconds=1800,
+            )
+
+            with mock.patch.object(browser_service.time, "monotonic", side_effect=fake_monotonic):
+                await manager.ensure_session("ou_a", public_base_url="https://browser.example.com")
+                await manager.takeover("ou_a")
+                takeover_last_used_at = manager._sessions["ou_a"].last_used_at
+                takeover_control_change_at = manager._sessions["ou_a"].last_control_change_at
+
+                clock["now"] = 204.5
+                await manager.resume("ou_a")
+                resumed_last_used_at = manager._sessions["ou_a"].last_used_at
+                resumed_control_change_at = manager._sessions["ou_a"].last_control_change_at
+
+                result = await manager.navigate("ou_a", "https://example.com")
+
+            self.assertEqual(result["url"], "https://example.com")
+            self.assertEqual(manager._sessions["ou_a"].controller, "agent")
+            self.assertGreater(resumed_last_used_at, takeover_last_used_at)
+            self.assertGreater(resumed_control_change_at, takeover_control_change_at)
 
         asyncio.run(run_test())
 

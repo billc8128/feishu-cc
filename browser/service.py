@@ -110,6 +110,7 @@ class BrowserSessionManager:
     async def takeover(self, open_id: str) -> Dict[str, Any]:
         async with self._lock:
             record = self._require_active_locked(open_id)
+            record.last_used_at = time.monotonic()
             record.controller = "human"
             record.paused_reason = "takeover"
             record.last_control_change_at = time.monotonic()
@@ -118,6 +119,7 @@ class BrowserSessionManager:
     async def resume(self, open_id: str) -> Dict[str, Any]:
         async with self._lock:
             record = self._require_active_locked(open_id)
+            record.last_used_at = time.monotonic()
             record.controller = "agent"
             record.paused_reason = ""
             record.last_control_change_at = time.monotonic()
