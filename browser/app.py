@@ -64,6 +64,28 @@ def _public_base_url(request: Request) -> str:
     return settings.browser_public_base_url.rstrip("/") or str(request.base_url).rstrip("/")
 
 
+def _translate_session_runtime_error(error: RuntimeError) -> HTTPException:
+    return HTTPException(status_code=409, detail=str(error))
+
+
+def _open_id_for_viewer_token(viewer_token: str) -> str:
+    sessions = getattr(manager, "_sessions", None)
+    if not isinstance(sessions, dict):
+        sessions = getattr(manager, "sessions", None)
+    if not isinstance(sessions, dict):
+        raise HTTPException(status_code=404, detail="viewer session not found")
+
+    for open_id, record in sessions.items():
+        if isinstance(record, dict):
+            token = record.get("viewer_token")
+        else:
+            token = getattr(record, "viewer_token", "")
+        if token == viewer_token:
+            return open_id
+
+    raise HTTPException(status_code=404, detail="viewer session not found")
+
+
 @app.get("/health")
 async def health() -> dict:
     return {"ok": True}
@@ -122,12 +144,36 @@ async def snapshot(open_id: str) -> dict:
 
 @app.post("/v1/sessions/{open_id}/takeover", dependencies=[Depends(_require_auth)])
 async def takeover_session(open_id: str) -> dict:
-    return await manager.takeover(open_id)
+    try:
+        return await manager.takeover(open_id)
+    except RuntimeError as error:
+        raise _translate_session_runtime_error(error) from error
 
 
 @app.post("/v1/sessions/{open_id}/resume", dependencies=[Depends(_require_auth)])
 async def resume_session(open_id: str) -> dict:
-    return await manager.resume(open_id)
+    try:
+        return await manager.resume(open_id)
+    except RuntimeError as error:
+        raise _translate_session_runtime_error(error) from error
+
+
+@app.post("/view/{viewer_token}/takeover")
+async def takeover_viewer_session(viewer_token: str) -> dict:
+    open_id = _open_id_for_viewer_token(viewer_token)
+    try:
+        return await manager.takeover(open_id)
+    except RuntimeError as error:
+        raise _translate_session_runtime_error(error) from error
+
+
+@app.post("/view/{viewer_token}/resume")
+async def resume_viewer_session(viewer_token: str) -> dict:
+    open_id = _open_id_for_viewer_token(viewer_token)
+    try:
+        return await manager.resume(open_id)
+    except RuntimeError as error:
+        raise _translate_session_runtime_error(error) from error
 
 
 @app.get("/view/{viewer_token}")

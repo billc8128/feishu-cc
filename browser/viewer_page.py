@@ -5,7 +5,12 @@ from html import escape
 
 def render_viewer_page(*, viewer_token: str) -> str:
     token = escape(viewer_token, quote=True)
-    novnc_src = f"/novnc/vnc_lite.html?path=ws/{token}&autoconnect=1&resize=scale"
+    spectator_src = (
+        f"/novnc/vnc_lite.html?path=ws/{token}&autoconnect=1&view_only=1&resize=scale"
+    )
+    interactive_src = f"/novnc/vnc_lite.html?path=ws/{token}&autoconnect=1&resize=scale"
+    takeover_path = f"/view/{token}/takeover"
+    resume_path = f"/view/{token}/resume"
 
     return f"""<!doctype html>
 <html lang="en">
@@ -66,16 +71,54 @@ def render_viewer_page(*, viewer_token: str) -> str:
         <button id="resume-button" type="button">Resume Agent</button>
       </div>
       <iframe
+        id="viewer-frame"
         title="Browser session"
-        src="{novnc_src}"
+        src="{spectator_src}"
         allow="clipboard-read; clipboard-write"
       ></iframe>
     </div>
     <script>
       window.browserViewer = {{
         viewerToken: "{token}",
-        novncPath: "{novnc_src}"
+        spectatorPath: "{spectator_src}",
+        interactivePath: "{interactive_src}",
+        takeoverPath: "{takeover_path}",
+        resumePath: "{resume_path}"
       }};
+
+      const viewerState = window.browserViewer;
+      const statusNode = document.getElementById("viewer-status");
+      const frameNode = document.getElementById("viewer-frame");
+      const takeoverButton = document.getElementById("takeover-button");
+      const resumeButton = document.getElementById("resume-button");
+
+      async function sendControlRequest(url, nextSrc, message) {{
+        statusNode.textContent = "Updating control...";
+        const response = await fetch(url, {{ method: "POST" }});
+        const payload = await response.json();
+        if (!response.ok) {{
+          statusNode.textContent = payload.detail || "Unable to update control.";
+          return;
+        }}
+        frameNode.src = nextSrc;
+        statusNode.textContent = message;
+      }}
+
+      takeoverButton.addEventListener("click", () => {{
+        void sendControlRequest(
+          viewerState.takeoverPath,
+          viewerState.interactivePath,
+          "Human takeover active. Agent control is paused."
+        );
+      }});
+
+      resumeButton.addEventListener("click", () => {{
+        void sendControlRequest(
+          viewerState.resumePath,
+          viewerState.spectatorPath,
+          "Agent control resumed. Viewer is back in spectator mode."
+        );
+      }});
     </script>
   </body>
 </html>
