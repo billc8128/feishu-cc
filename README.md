@@ -115,6 +115,31 @@ git push -u origin main
 2. 选你刚才创建的 `my-feishu-cc` 仓库
 3. Railway 会自动识别 Dockerfile 并开始构建
 
+### 4.1.1 可选:新增 browser service
+
+如果你想让 agent 调用真实浏览器,需要在同一个 Railway 项目里再加一个 service:
+
+1. 再次点击 "New Service"
+2. 仍然选择当前仓库
+3. 把 **Root Directory** 留空
+4. 把 **Dockerfile Path** 改成 `browser/Dockerfile`
+5. 给这个 service 单独加一个 Volume,挂载到 `/data`
+
+这个 browser service 需要至少这些环境变量:
+
+```env
+BROWSER_SERVICE_TOKEN=一串随机长字符串
+BROWSER_PUBLIC_BASE_URL=https://你的-browser-service 域名
+DATA_DIR=/data
+```
+
+主 bot service 还要补这两个变量,这样 agent/bot 才能调用 browser service:
+
+```env
+BROWSER_SERVICE_BASE_URL=https://你的-browser-service 域名
+BROWSER_SERVICE_TOKEN=和 browser service 保持一致
+```
+
 ### 4.2 加 Volume(必须!不加重启就丢数据)
 
 1. 项目页面 → 选中你的服务 → "Settings" → "Volumes"

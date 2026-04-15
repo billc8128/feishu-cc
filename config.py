@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     # 运行参数
     agent_max_duration_seconds: int = 1800
     schedule_daily_trigger_limit: int = 50
+    browser_service_base_url: str = ""
+    browser_service_token: str = ""
+    browser_approval_timeout_seconds: int = 300
+    browser_queue_wait_timeout_seconds: int = 1200
     log_level: str = "INFO"
 
     @property

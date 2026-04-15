@@ -17,6 +17,8 @@ from auth import store as auth_store
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from agent import browser_approval
+from agent.browser_client import browser_client
 from config import settings
 from feishu import events as feishu_events
 from feishu.client import feishu_client
@@ -163,6 +165,10 @@ async def _dispatch(parsed: feishu_events.ParsedMessageEvent) -> None:
             await feishu_client.send_text(open_id, _access_required_text(access_status))
             return
 
+        if text.startswith("/browser"):
+            await _handle_browser_command(open_id, text)
+            return
+
         # /stop 中断当前 agent 任务
         if text in ("/stop", "/cancel", "/中断"):
             from agent import runner as agent_runner
@@ -251,6 +257,68 @@ async def _handle_cron_command(open_id: str, text: str) -> None:
         "/cron list                 列出所有定时任务\n"
         "/cron delete <task_id>     删除某个定时任务\n"
         "(创建定时任务请直接告诉我 — 比如『每天早上 8 点检查 GitHub 新 issue』)"
+    )
+
+
+async def _handle_browser_command(open_id: str, text: str) -> None:
+    parts = text.split(maxsplit=1)
+    sub = parts[1].strip().lower() if len(parts) >= 2 else "status"
+
+    if sub == "yes":
+        ok = browser_approval.resolve_request(open_id, approved=True)
+        if ok:
+            await feishu_client.send_text(open_id, "✅ 已允许 agent 使用浏览器。")
+        else:
+            await feishu_client.send_text(open_id, "ℹ️ 当前没有待确认的浏览器请求。")
+        return
+
+    if sub == "no":
+        ok = browser_approval.resolve_request(open_id, approved=False)
+        if ok:
+            await feishu_client.send_text(open_id, "🛑 已取消本次浏览器请求。")
+        else:
+            await feishu_client.send_text(open_id, "ℹ️ 当前没有待确认的浏览器请求。")
+        return
+
+    if sub == "status":
+        try:
+            session = await browser_client.get_session(open_id)
+        except Exception as exc:
+            await feishu_client.send_text(open_id, f"❌ 查询浏览器状态失败:{exc}")
+            return
+        if not session:
+            await feishu_client.send_text(open_id, "ℹ️ 当前没有浏览器会话。")
+            return
+        message = [
+            "🌐 浏览器状态",
+            f"状态: {session.get('state', 'unknown')}",
+        ]
+        if session.get("queue_position"):
+            message.append(f"排队位置: {session['queue_position']}")
+        if session.get("viewer_url"):
+            message.append(f"旁观链接: {session['viewer_url']}")
+        await feishu_client.send_text(open_id, "\n".join(message))
+        return
+
+    if sub == "close":
+        try:
+            result = await browser_client.close_session(open_id)
+        except Exception as exc:
+            await feishu_client.send_text(open_id, f"❌ 关闭浏览器会话失败:{exc}")
+            return
+        if not result:
+            await feishu_client.send_text(open_id, "ℹ️ 当前没有可关闭的浏览器会话。")
+            return
+        await feishu_client.send_text(open_id, "🧹 已关闭当前浏览器会话。")
+        return
+
+    await feishu_client.send_text(
+        open_id,
+        "🌐 浏览器命令\n"
+        "/browser yes       允许 agent 使用浏览器\n"
+        "/browser no        拒绝本次浏览器请求\n"
+        "/browser status    查看当前浏览器会话状态\n"
+        "/browser close     关闭当前浏览器会话",
     )
 
 
@@ -358,6 +426,7 @@ def _help_text(*, is_admin: bool, approved: bool) -> str:
         "直接发消息就是跟 Claude 对话。常用命令:",
         "  /project           项目管理(list/switch/new/clone/delete)",
         "  /cron              定时任务管理",
+        "  /browser           浏览器授权/状态管理",
         "  /stop              中断当前正在跑的任务",
         "  /status            查看自己的开通状态",
         "  /whoami            查看自己的 open_id",

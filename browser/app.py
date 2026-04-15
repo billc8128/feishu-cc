@@ -1,0 +1,174 @@
+from __future__ import annotations
+
+import asyncio
+import contextlib
+from pathlib import Path
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from browser.config import settings
+from browser.driver import PlaywrightBrowserDriver
+from browser.service import BrowserSessionManager
+
+settings.ensure_dirs()
+
+driver = PlaywrightBrowserDriver()
+manager = BrowserSessionManager(
+    data_dir=settings.data_path,
+    driver=driver,
+    idle_timeout_seconds=settings.browser_idle_timeout_seconds,
+    max_session_ttl_seconds=settings.browser_max_session_ttl_seconds,
+)
+app = FastAPI(title="browser-service", version="0.1.0")
+
+novnc_dir = Path("/usr/share/novnc")
+if novnc_dir.is_dir():
+    app.mount("/novnc", StaticFiles(directory=novnc_dir), name="novnc")
+
+
+class EnsureSessionRequest(BaseModel):
+    open_id: str
+
+
+class NavigateRequest(BaseModel):
+    url: str
+
+
+class ClickRequest(BaseModel):
+    selector: str
+
+
+class TypeRequest(BaseModel):
+    selector: str
+    text: str
+    clear: bool = True
+
+
+class WaitRequest(BaseModel):
+    selector: str = ""
+    text: str = ""
+    timeout_ms: int = 10_000
+
+
+def _require_auth(authorization: str = Header(default="")) -> None:
+    expected = f"Bearer {settings.browser_service_token}"
+    if authorization != expected:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+
+def _public_base_url(request: Request) -> str:
+    return settings.browser_public_base_url.rstrip("/") or str(request.base_url).rstrip("/")
+
+
+@app.get("/health")
+async def health() -> dict:
+    return {"ok": True}
+
+
+@app.post("/v1/sessions/ensure", dependencies=[Depends(_require_auth)])
+async def ensure_session(payload: EnsureSessionRequest, request: Request) -> dict:
+    return await manager.ensure_session(payload.open_id, public_base_url=_public_base_url(request))
+
+
+@app.get("/v1/sessions/{open_id}", dependencies=[Depends(_require_auth)])
+async def get_session(open_id: str) -> dict:
+    session = await manager.get_session(open_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    return session
+
+
+@app.post("/v1/sessions/{open_id}/close", dependencies=[Depends(_require_auth)])
+async def close_session(open_id: str, request: Request) -> dict:
+    session = await manager.close_session(open_id, public_base_url=_public_base_url(request))
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    return session
+
+
+@app.post("/v1/sessions/{open_id}/navigate", dependencies=[Depends(_require_auth)])
+async def navigate(open_id: str, payload: NavigateRequest) -> dict:
+    return await manager.navigate(open_id, payload.url)
+
+
+@app.post("/v1/sessions/{open_id}/click", dependencies=[Depends(_require_auth)])
+async def click(open_id: str, payload: ClickRequest) -> dict:
+    return await manager.click(open_id, payload.selector)
+
+
+@app.post("/v1/sessions/{open_id}/type", dependencies=[Depends(_require_auth)])
+async def type_text(open_id: str, payload: TypeRequest) -> dict:
+    return await manager.type(open_id, payload.selector, payload.text, clear=payload.clear)
+
+
+@app.post("/v1/sessions/{open_id}/wait", dependencies=[Depends(_require_auth)])
+async def wait_for(open_id: str, payload: WaitRequest) -> dict:
+    return await manager.wait(
+        open_id,
+        selector=payload.selector,
+        text=payload.text,
+        timeout_ms=payload.timeout_ms,
+    )
+
+
+@app.post("/v1/sessions/{open_id}/snapshot", dependencies=[Depends(_require_auth)])
+async def snapshot(open_id: str) -> dict:
+    return await manager.snapshot(open_id)
+
+
+@app.get("/view/{viewer_token}")
+async def view_session(viewer_token: str) -> RedirectResponse:
+    target = f"/novnc/vnc_lite.html?path=ws/{viewer_token}&autoconnect=1&view_only=1&resize=scale"
+    return RedirectResponse(target)
+
+
+@app.websocket("/ws/{viewer_token}")
+async def vnc_websocket(websocket: WebSocket, viewer_token: str) -> None:
+    if not await manager.validate_viewer_token(viewer_token):
+        await websocket.close(code=4403)
+        return
+
+    await websocket.accept()
+    reader, writer = await asyncio.open_connection("127.0.0.1", driver.vnc_port)
+
+    async def websocket_to_tcp() -> None:
+        try:
+            while True:
+                message = await websocket.receive()
+                if message["type"] == "websocket.disconnect":
+                    break
+                if message.get("bytes") is not None:
+                    writer.write(message["bytes"])
+                    await writer.drain()
+                elif message.get("text") is not None:
+                    writer.write(message["text"].encode("utf-8"))
+                    await writer.drain()
+        finally:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+
+    async def tcp_to_websocket() -> None:
+        try:
+            while True:
+                data = await reader.read(65536)
+                if not data:
+                    break
+                await websocket.send_bytes(data)
+        finally:
+            with contextlib.suppress(Exception):
+                await websocket.close()
+
+    tasks = [
+        asyncio.create_task(websocket_to_tcp()),
+        asyncio.create_task(tcp_to_websocket()),
+    ]
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    for task in pending:
+        task.cancel()
+    for task in done:
+        with contextlib.suppress(Exception):
+            await task
