@@ -16,6 +16,7 @@ from lark_oapi.api.im.v1 import (
     CreateFileRequestBody,
     CreateImageRequest,
     CreateImageRequestBody,
+    GetMessageResourceRequest,
     CreateMessageRequest,
     CreateMessageRequestBody,
     CreateMessageResponse,
@@ -212,6 +213,34 @@ class FeishuClient:
             msg_type="file",
             content=json.dumps({"file_key": file_key}, ensure_ascii=False),
         )
+
+    async def download_message_resource(
+        self,
+        *,
+        message_id: str,
+        file_key: str,
+        resource_type: str,
+        destination: Path,
+    ) -> Optional[Path]:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        req = (
+            GetMessageResourceRequest.builder()
+            .message_id(message_id)
+            .file_key(file_key)
+            .type(resource_type)
+            .build()
+        )
+        resp = await self.client.im.v1.message_resource.aget(req)
+        if not resp.success():
+            logger.error(
+                "download message resource failed: code=%s msg=%s",
+                resp.code,
+                resp.msg,
+            )
+            return None
+
+        destination.write_bytes(resp.file.read())
+        return destination
 
     # ---------- 编辑消息 ----------
 
