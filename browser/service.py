@@ -7,6 +7,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Deque, Dict, Optional, Protocol
 
+ACTIVE_SESSION_STATE = "active"
+QUEUED_SESSION_STATE = "queued"
+CLOSED_SESSION_STATE = "closed"
+AGENT_CONTROLLER = "agent"
+HUMAN_CONTROLLER = "human"
+TAKEOVER_PAUSED_REASON = "takeover"
+TAKEOVER_PAUSED_ERROR = "BROWSER_PAUSED_FOR_TAKEOVER"
+NO_ACTIVE_SESSION_ERROR = "no active browser session for this user"
+
 
 class BrowserDriver(Protocol):
     async def start(self, *, open_id: str, profile_dir: Path, public_base_url: str) -> Dict[str, Any]:
@@ -45,7 +54,7 @@ class SessionRecord:
     profile_dir: Path
     created_at: float
     last_used_at: float
-    controller: str = "agent"
+    controller: str = AGENT_CONTROLLER
     paused_reason: str = ""
     last_control_change_at: float = 0.0
     viewer_token: str = ""
@@ -78,7 +87,7 @@ class BrowserSessionManager:
 
             existing = self._sessions.get(open_id)
             if existing:
-                if existing.state == "queued":
+                if existing.state == QUEUED_SESSION_STATE:
                     return self._serialize(existing)
                 if self._active_open_id == open_id:
                     existing.last_used_at = time.monotonic()
@@ -88,7 +97,7 @@ class BrowserSessionManager:
                 if open_id not in self._queue:
                     record = SessionRecord(
                         open_id=open_id,
-                        state="queued",
+                        state=QUEUED_SESSION_STATE,
                         profile_dir=self._profile_dir(open_id),
                         created_at=time.monotonic(),
                         last_used_at=time.monotonic(),
@@ -109,20 +118,24 @@ class BrowserSessionManager:
 
     async def takeover(self, open_id: str) -> Dict[str, Any]:
         async with self._lock:
+            await self._expire_active_session_for_open_id_locked(open_id)
             record = self._require_active_locked(open_id)
-            record.last_used_at = time.monotonic()
-            record.controller = "human"
-            record.paused_reason = "takeover"
-            record.last_control_change_at = time.monotonic()
+            now = time.monotonic()
+            record.last_used_at = now
+            record.controller = HUMAN_CONTROLLER
+            record.paused_reason = TAKEOVER_PAUSED_REASON
+            record.last_control_change_at = now
             return self._serialize(record)
 
     async def resume(self, open_id: str) -> Dict[str, Any]:
         async with self._lock:
+            await self._expire_active_session_for_open_id_locked(open_id)
             record = self._require_active_locked(open_id)
-            record.last_used_at = time.monotonic()
-            record.controller = "agent"
+            now = time.monotonic()
+            record.last_used_at = now
+            record.controller = AGENT_CONTROLLER
             record.paused_reason = ""
-            record.last_control_change_at = time.monotonic()
+            record.last_control_change_at = now
             return self._serialize(record)
 
     async def navigate(self, open_id: str, url: str) -> Dict[str, Any]:
@@ -177,7 +190,9 @@ class BrowserSessionManager:
             if not self._active_open_id:
                 return False
             record = self._sessions.get(self._active_open_id)
-            return bool(record and record.viewer_token == viewer_token and record.state == "active")
+            return bool(
+                record and record.viewer_token == viewer_token and record.state == ACTIVE_SESSION_STATE
+            )
 
     async def close_session(self, open_id: str, *, public_base_url: str) -> Optional[Dict[str, Any]]:
         async with self._lock:
@@ -188,11 +203,11 @@ class BrowserSessionManager:
         if not record:
             return None
 
-        if record.state == "queued":
+        if record.state == QUEUED_SESSION_STATE:
             self._queue = deque(
                 queued_open_id for queued_open_id in self._queue if queued_open_id != open_id
             )
-            record.state = "closed"
+            record.state = CLOSED_SESSION_STATE
             self._sessions.pop(open_id, None)
             return self._serialize(record)
 
@@ -201,7 +216,7 @@ class BrowserSessionManager:
 
         await self._driver.stop(open_id)
         self._active_open_id = None
-        record.state = "closed"
+        record.state = CLOSED_SESSION_STATE
         closed = self._serialize(record)
         self._sessions.pop(open_id, None)
         if self._queue:
@@ -218,7 +233,7 @@ class BrowserSessionManager:
         )
         record = SessionRecord(
             open_id=open_id,
-            state="active",
+            state=ACTIVE_SESSION_STATE,
             profile_dir=profile_dir,
             created_at=time.monotonic(),
             last_used_at=time.monotonic(),
@@ -257,7 +272,7 @@ class BrowserSessionManager:
             "viewer_url": record.viewer_url,
             "viewer_token": record.viewer_token,
         }
-        if record.state == "queued":
+        if record.state == QUEUED_SESSION_STATE:
             payload["queue_position"] = self._queue_position(record.open_id)
         return payload
 
@@ -269,10 +284,31 @@ class BrowserSessionManager:
 
     def _require_active_locked(self, open_id: str) -> SessionRecord:
         record = self._sessions.get(open_id)
-        if not record or self._active_open_id != open_id or record.state != "active":
-            raise RuntimeError("no active browser session for this user")
+        if not record or self._active_open_id != open_id or record.state != ACTIVE_SESSION_STATE:
+            raise RuntimeError(NO_ACTIVE_SESSION_ERROR)
         return record
 
     def _require_agent_control_locked(self, record: SessionRecord) -> None:
-        if record.controller != "agent":
-            raise RuntimeError("BROWSER_PAUSED_FOR_TAKEOVER")
+        if record.controller != AGENT_CONTROLLER:
+            raise RuntimeError(TAKEOVER_PAUSED_ERROR)
+
+    async def _expire_active_session_for_open_id_locked(self, open_id: str) -> None:
+        if self._active_open_id != open_id:
+            return
+        record = self._sessions.get(open_id)
+        if not record:
+            self._active_open_id = None
+            return
+        if self._session_is_expired_locked(record):
+            await self._close_session_locked(open_id, self._public_base_url_for_locked(record))
+
+    def _session_is_expired_locked(self, record: SessionRecord) -> bool:
+        now = time.monotonic()
+        idle_expired = (now - record.last_used_at) >= self._idle_timeout_seconds
+        ttl_expired = (now - record.created_at) >= self._max_session_ttl_seconds
+        return idle_expired or ttl_expired
+
+    def _public_base_url_for_locked(self, record: SessionRecord) -> str:
+        if "/view/" in record.viewer_url:
+            return record.viewer_url.rsplit("/view/", 1)[0]
+        return ""

@@ -55,6 +55,9 @@ class BrowserServiceTests(unittest.TestCase):
             )
 
             self.assertEqual(session["state"], "active")
+            self.assertEqual(session["controller"], "agent")
+            self.assertEqual(session["paused_reason"], "")
+            self.assertEqual(session["last_control_change_at"], 0.0)
             self.assertEqual(session["viewer_url"], "https://browser.example.com/view/ou_a")
             self.assertEqual(self.driver.started[0][0], "ou_a")
 
@@ -64,9 +67,16 @@ class BrowserServiceTests(unittest.TestCase):
         async def run_test() -> None:
             await self.manager.ensure_session("ou_a", public_base_url="https://browser.example.com")
             session = await self.manager.ensure_session("ou_b", public_base_url="https://browser.example.com")
+            queued_session = await self.manager.get_session("ou_b")
 
             self.assertEqual(session["state"], "queued")
             self.assertEqual(session["queue_position"], 1)
+            self.assertEqual(session["controller"], "agent")
+            self.assertEqual(session["paused_reason"], "")
+            self.assertEqual(session["last_control_change_at"], 0.0)
+            self.assertEqual(queued_session["controller"], "agent")
+            self.assertEqual(queued_session["paused_reason"], "")
+            self.assertEqual(queued_session["last_control_change_at"], 0.0)
 
         asyncio.run(run_test())
 
@@ -145,6 +155,32 @@ class BrowserServiceTests(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_takeover_expires_stale_session_before_transition(self) -> None:
+        async def run_test() -> None:
+            clock = {"now": 100.0}
+
+            def fake_monotonic() -> float:
+                return clock["now"]
+
+            manager = browser_service.BrowserSessionManager(
+                data_dir=Path(self._tmp.name),
+                driver=self.driver,
+                idle_timeout_seconds=5,
+                max_session_ttl_seconds=1800,
+            )
+
+            with mock.patch.object(browser_service.time, "monotonic", side_effect=fake_monotonic):
+                await manager.ensure_session("ou_a", public_base_url="https://browser.example.com")
+                clock["now"] = 106.0
+
+                with self.assertRaisesRegex(RuntimeError, "no active browser session for this user"):
+                    await manager.takeover("ou_a")
+
+            self.assertEqual(self.driver.stopped, ["ou_a"])
+            self.assertIsNone(await manager.get_session("ou_a"))
+
+        asyncio.run(run_test())
+
     def test_resume_switches_controller_back_to_agent(self) -> None:
         async def run_test() -> None:
             await self.manager.ensure_session("ou_a", public_base_url="https://browser.example.com")
@@ -191,6 +227,33 @@ class BrowserServiceTests(unittest.TestCase):
             self.assertEqual(manager._sessions["ou_a"].controller, "agent")
             self.assertGreater(resumed_last_used_at, takeover_last_used_at)
             self.assertGreater(resumed_control_change_at, takeover_control_change_at)
+
+        asyncio.run(run_test())
+
+    def test_resume_expires_stale_session_before_transition(self) -> None:
+        async def run_test() -> None:
+            clock = {"now": 200.0}
+
+            def fake_monotonic() -> float:
+                return clock["now"]
+
+            manager = browser_service.BrowserSessionManager(
+                data_dir=Path(self._tmp.name),
+                driver=self.driver,
+                idle_timeout_seconds=5,
+                max_session_ttl_seconds=1800,
+            )
+
+            with mock.patch.object(browser_service.time, "monotonic", side_effect=fake_monotonic):
+                await manager.ensure_session("ou_a", public_base_url="https://browser.example.com")
+                await manager.takeover("ou_a")
+                clock["now"] = 206.0
+
+                with self.assertRaisesRegex(RuntimeError, "no active browser session for this user"):
+                    await manager.resume("ou_a")
+
+            self.assertEqual(self.driver.stopped, ["ou_a"])
+            self.assertIsNone(await manager.get_session("ou_a"))
 
         asyncio.run(run_test())
 
