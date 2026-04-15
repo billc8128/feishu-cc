@@ -13,6 +13,7 @@ os.environ.setdefault("BROWSER_SERVICE_BASE_URL", "https://browser.example.com")
 os.environ.setdefault("BROWSER_SERVICE_TOKEN", "browser-token")
 os.environ.setdefault("FEISHU_APP_ID", "test-app-id")
 os.environ.setdefault("FEISHU_APP_SECRET", "test-app-secret")
+os.environ.setdefault("DATA_DIR", "/tmp/feishu-cc-test-data")
 
 
 def _install_sdk_stub() -> None:
@@ -169,6 +170,10 @@ class BrowserToolsTests(unittest.TestCase):
                 new=AsyncMock(return_value=True),
             ), patch.object(
                 browser_tools.feishu_client,
+                "send_browser_approval_card",
+                new=AsyncMock(return_value="om_card"),
+            ) as send_card, patch.object(
+                browser_tools.feishu_client,
                 "send_text",
                 new=AsyncMock(),
             ) as send_text:
@@ -176,8 +181,8 @@ class BrowserToolsTests(unittest.TestCase):
 
             self.assertFalse(result.get("is_error", False))
             self.assertIn("https://viewer/session-1", result["content"][0]["text"])
-            self.assertIn("/browser yes", send_text.await_args_list[0].args[1])
-            self.assertIn("旁观/接管链接", send_text.await_args_list[1].args[1])
+            send_card.assert_awaited_once_with("ou_123", reason="需要登录 Reddit")
+            self.assertIn("旁观/接管链接", send_text.await_args_list[0].args[1])
 
         asyncio.run(run_test())
 
@@ -195,6 +200,10 @@ class BrowserToolsTests(unittest.TestCase):
             ), patch(
                 "agent.tools_browser.browser_approval.wait_for_decision",
                 new=AsyncMock(return_value=False),
+            ), patch.object(
+                browser_tools.feishu_client,
+                "send_browser_approval_card",
+                new=AsyncMock(return_value="om_card"),
             ), patch.object(
                 browser_tools.feishu_client,
                 "send_text",

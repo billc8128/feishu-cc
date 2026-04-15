@@ -43,13 +43,23 @@ def _tool_error(message: str, exc: Exception) -> Dict[str, Any]:
     return _tool_text(f"{message}: {exc}", is_error=True)
 
 
+def _approval_fallback_text(reason: str) -> str:
+    return (
+        "🌐 当前任务需要使用浏览器。\n"
+        f"原因: {reason}\n"
+        "允许: /browser yes\n"
+        "拒绝: /browser no"
+    )
+
+
 def build_browser_mcp(open_id: str):
     @tool(
         "browser_open",
         "Open or reuse the current user's browser session. If no session exists, "
-        "ask the user for browser permission in Feishu, wait for /browser yes or "
-        "/browser no, then create or reuse the browser session. Returns the live "
-        "viewer/takeover URL when ready. Use this before any other browser_* tool.",
+        "ask the user for browser permission in Feishu via approval card or "
+        "/browser yes|no, then create or reuse the browser session. Returns the "
+        "live viewer/takeover URL when ready. Use this before any other "
+        "browser_* tool.",
         {"reason": str},
     )
     async def browser_open(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -68,13 +78,12 @@ def build_browser_mcp(open_id: str):
                 timeout_seconds=settings.browser_approval_timeout_seconds,
             )
             if created:
-                await feishu_client.send_text(
+                card_message_id = await feishu_client.send_browser_approval_card(
                     open_id,
-                    "🌐 当前任务需要使用浏览器。\n"
-                    f"原因: {reason}\n"
-                    "允许: /browser yes\n"
-                    "拒绝: /browser no",
+                    reason=reason,
                 )
+                if not card_message_id:
+                    await feishu_client.send_text(open_id, _approval_fallback_text(reason))
             try:
                 approved = await browser_approval.wait_for_decision(open_id)
             except browser_approval.ApprovalTimeoutError:

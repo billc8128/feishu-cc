@@ -106,6 +106,54 @@ class FeishuClient:
             content=json.dumps(card, ensure_ascii=False),
         )
 
+    async def send_browser_approval_card(
+        self,
+        open_id: str,
+        *,
+        reason: str,
+    ) -> Optional[str]:
+        """发送浏览器授权卡片,按钮确认,文本命令兜底。"""
+        reason = reason.strip() or "需要一个真实浏览器来继续操作"
+        md = (
+            "🌐 **当前任务需要使用浏览器**\n"
+            f"原因: {reason}\n\n"
+            "点击下面按钮授权。\n"
+            "如果卡片按钮失效,也可以回复 `/browser yes` 或 `/browser no`。"
+        )
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": "浏览器授权"},
+                "template": "blue",
+            },
+            "elements": [
+                {"tag": "markdown", "content": md},
+                {
+                    "tag": "action",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "允许"},
+                            "type": "primary",
+                            "value": {"kind": "browser_approval", "decision": "yes"},
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "拒绝"},
+                            "type": "default",
+                            "value": {"kind": "browser_approval", "decision": "no"},
+                        },
+                    ],
+                },
+            ],
+        }
+        return await self._create_message(
+            receive_id_type="open_id",
+            receive_id=open_id,
+            msg_type="interactive",
+            content=json.dumps(card, ensure_ascii=False),
+        )
+
     # ---------- 文件 / 图片 ----------
 
     # 飞书限制:单张图片 ≤ 10MB,单个文件 ≤ 30MB

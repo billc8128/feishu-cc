@@ -108,6 +108,10 @@ async def feishu_webhook(request: Request) -> JSONResponse:
     if feishu_events.is_duplicate(event_id):
         return JSONResponse({"ok": True})
 
+    parsed_card_action = feishu_events.parse_card_action_event(body)
+    if parsed_card_action:
+        return JSONResponse(await _handle_card_action(parsed_card_action))
+
     # 解析消息事件
     parsed = feishu_events.parse_message_event(body)
     if not parsed:
@@ -216,6 +220,27 @@ async def _dispatch(parsed: feishu_events.ParsedMessageEvent) -> None:
             )
         except Exception:
             pass
+
+
+async def _handle_card_action(parsed: feishu_events.ParsedCardActionEvent) -> dict:
+    value = parsed.action_value
+    if value.get("kind") != "browser_approval":
+        return {"toast": {"type": "info", "content": "ℹ️ 未处理的卡片动作。"}}
+
+    decision = str(value.get("decision") or "").strip().lower()
+    if decision == "yes":
+        ok = browser_approval.resolve_request(parsed.operator_open_id, approved=True)
+        if ok:
+            return {"toast": {"type": "success", "content": "✅ 已允许 agent 使用浏览器。"}}
+        return {"toast": {"type": "info", "content": "ℹ️ 当前没有待确认的浏览器请求。"}}
+
+    if decision == "no":
+        ok = browser_approval.resolve_request(parsed.operator_open_id, approved=False)
+        if ok:
+            return {"toast": {"type": "warning", "content": "🛑 已取消本次浏览器请求。"}}
+        return {"toast": {"type": "info", "content": "ℹ️ 当前没有待确认的浏览器请求。"}}
+
+    return {"toast": {"type": "error", "content": "❌ 无效的浏览器审批动作。"}}
 
 
 async def _handle_cron_command(open_id: str, text: str) -> None:

@@ -11,6 +11,8 @@ os.environ.setdefault("ANTHROPIC_AUTH_TOKEN", "test-token")
 os.environ.setdefault("FEISHU_APP_ID", "test-app-id")
 os.environ.setdefault("FEISHU_APP_SECRET", "test-app-secret")
 os.environ.setdefault("DATA_DIR", "/tmp/feishu-cc-test-data")
+os.environ.setdefault("BROWSER_SERVICE_BASE_URL", "https://browser.example.com")
+os.environ.setdefault("BROWSER_SERVICE_TOKEN", "browser-token")
 
 
 def _install_test_stubs() -> None:
@@ -50,7 +52,7 @@ settings = importlib.import_module("config").settings
 app_module = importlib.import_module("app")
 browser_approval = importlib.import_module("agent.browser_approval")
 auth_store = importlib.import_module("auth.store")
-from feishu.events import ParsedMessageEvent
+from feishu.events import ParsedCardActionEvent, ParsedMessageEvent
 
 
 class BrowserCommandTests(unittest.TestCase):
@@ -88,6 +90,24 @@ class BrowserCommandTests(unittest.TestCase):
 
             self.assertEqual(browser_approval.get_request_status("ou_user"), "approved")
             self.assertIn("已允许", send_text.await_args.args[1])
+
+        asyncio.run(run_test())
+
+    def test_browser_approval_card_action_resolves_pending_request(self) -> None:
+        async def run_test() -> None:
+            browser_approval.start_request("ou_user", reason="登录", timeout_seconds=60)
+            parsed = ParsedCardActionEvent(
+                event_id="evt-card-1",
+                operator_open_id="ou_user",
+                open_message_id="om_card_1",
+                action_tag="button",
+                action_value={"kind": "browser_approval", "decision": "yes"},
+            )
+
+            response = await app_module._handle_card_action(parsed)
+
+            self.assertEqual(browser_approval.get_request_status("ou_user"), "approved")
+            self.assertEqual(response["toast"]["content"], "✅ 已允许 agent 使用浏览器。")
 
         asyncio.run(run_test())
 

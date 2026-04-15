@@ -4,9 +4,17 @@ import unittest
 os.environ.setdefault("ANTHROPIC_AUTH_TOKEN", "test-token")
 os.environ.setdefault("FEISHU_APP_ID", "test-app-id")
 os.environ.setdefault("FEISHU_APP_SECRET", "test-app-secret")
+os.environ.setdefault("DATA_DIR", "/tmp/feishu-cc-test-data")
+os.environ.setdefault("BROWSER_SERVICE_BASE_URL", "https://browser.example.com")
+os.environ.setdefault("BROWSER_SERVICE_TOKEN", "browser-token")
 
 from config import settings
-from feishu.events import ParsedMessageEvent, is_allowed, parse_message_event
+from feishu.events import (
+    ParsedMessageEvent,
+    is_allowed,
+    parse_card_action_event,
+    parse_message_event,
+)
 
 
 class ParseMessageEventTests(unittest.TestCase):
@@ -104,6 +112,28 @@ class ParseMessageEventTests(unittest.TestCase):
         self.assertEqual(len(parsed.attachments), 1)
         self.assertEqual(parsed.attachments[0].kind, "image")
         self.assertEqual(parsed.attachments[0].file_key, "img_key")
+
+    def test_parses_browser_approval_card_action_event(self) -> None:
+        body = {
+            "header": {"event_type": "p2.card.action.trigger", "event_id": "evt-card-1"},
+            "event": {
+                "operator": {"open_id": "ou_123"},
+                "context": {"open_message_id": "om_123"},
+                "action": {
+                    "tag": "button",
+                    "value": {"kind": "browser_approval", "decision": "yes"},
+                },
+            },
+        }
+
+        parsed = parse_card_action_event(body)
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.event_id, "evt-card-1")
+        self.assertEqual(parsed.operator_open_id, "ou_123")
+        self.assertEqual(parsed.open_message_id, "om_123")
+        self.assertEqual(parsed.action_value["kind"], "browser_approval")
+        self.assertEqual(parsed.action_value["decision"], "yes")
 
     def test_allows_p2p_messages_without_static_whitelist(self) -> None:
         settings.feishu_allowed_open_ids = ""

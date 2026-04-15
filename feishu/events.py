@@ -16,6 +16,8 @@ from typing import Optional
 
 import lark_oapi as lark
 
+from config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,6 +64,15 @@ class ParsedMessageEvent:
     message_id: str
     text: str  # 已剥离 @机器人 前缀的纯文本
     attachments: list[IncomingAttachment]
+
+
+@dataclass
+class ParsedCardActionEvent:
+    event_id: str
+    operator_open_id: str
+    open_message_id: str
+    action_tag: str
+    action_value: dict
 
 
 # ---------- URL 验证(飞书后台首次配 webhook 时的握手) ----------
@@ -142,6 +153,29 @@ def parse_message_event(body: dict) -> Optional[ParsedMessageEvent]:
         message_id=message_id,
         text=text,
         attachments=attachments,
+    )
+
+
+def parse_card_action_event(body: dict) -> Optional[ParsedCardActionEvent]:
+    """解析飞书交互卡片按钮回调。"""
+    header = body.get("header") or {}
+    if header.get("event_type") not in {"p2.card.action.trigger", "card.action.trigger"}:
+        return None
+
+    event = body.get("event") or {}
+    operator = event.get("operator") or {}
+    context = event.get("context") or {}
+    action = event.get("action") or {}
+    action_value = action.get("value")
+    if not isinstance(action_value, dict):
+        action_value = {}
+
+    return ParsedCardActionEvent(
+        event_id=header.get("event_id", ""),
+        operator_open_id=operator.get("open_id", ""),
+        open_message_id=context.get("open_message_id", ""),
+        action_tag=str(action.get("tag") or ""),
+        action_value=action_value,
     )
 
 
