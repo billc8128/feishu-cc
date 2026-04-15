@@ -5,13 +5,14 @@ import contextlib
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from browser.config import settings
 from browser.driver import PlaywrightBrowserDriver
 from browser.service import BrowserSessionManager
+from browser.viewer_page import render_viewer_page
 
 settings.ensure_dirs()
 
@@ -119,10 +120,19 @@ async def snapshot(open_id: str) -> dict:
     return await manager.snapshot(open_id)
 
 
+@app.post("/v1/sessions/{open_id}/takeover", dependencies=[Depends(_require_auth)])
+async def takeover_session(open_id: str) -> dict:
+    return await manager.takeover(open_id)
+
+
+@app.post("/v1/sessions/{open_id}/resume", dependencies=[Depends(_require_auth)])
+async def resume_session(open_id: str) -> dict:
+    return await manager.resume(open_id)
+
+
 @app.get("/view/{viewer_token}")
-async def view_session(viewer_token: str) -> RedirectResponse:
-    target = f"/novnc/vnc_lite.html?path=ws/{viewer_token}&autoconnect=1&view_only=1&resize=scale"
-    return RedirectResponse(target)
+async def view_session(viewer_token: str) -> HTMLResponse:
+    return HTMLResponse(render_viewer_page(viewer_token=viewer_token))
 
 
 @app.websocket("/ws/{viewer_token}")
