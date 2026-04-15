@@ -8,6 +8,7 @@ os.environ.setdefault("BROWSER_SERVICE_TOKEN", "browser-token")
 os.environ.setdefault("DATA_DIR", "/tmp/feishu-cc-browser-test-data")
 
 browser_app = importlib.import_module("browser.app")
+viewer_page = importlib.import_module("browser.viewer_page")
 
 
 class _FakeManager:
@@ -142,3 +143,11 @@ class BrowserAppTests(unittest.TestCase):
         self.assertIn("try {", response.text)
         self.assertIn("catch (error)", response.text)
         self.assertIn("Connection issue. Please try again.", response.text)
+
+    def test_render_viewer_page_escapes_quote_and_newline_tokens_safely(self) -> None:
+        html = viewer_page.render_viewer_page(viewer_token='viewer"\nline')
+
+        self.assertIn('"viewerToken": "viewer\\"\\nline"', html)
+        self.assertIn("/view/viewer%22%0Aline/takeover", html)
+        self.assertIn("/view/viewer%22%0Aline/resume", html)
+        self.assertIn("path=ws/viewer%22%0Aline&amp;autoconnect=1&amp;view_only=1&amp;resize=scale", html)
