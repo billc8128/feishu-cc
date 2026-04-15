@@ -134,7 +134,7 @@ class BrowserCommandTests(unittest.TestCase):
 
         asyncio.run(run_test())
 
-    def test_browser_close_closes_active_session(self) -> None:
+    def test_browser_status_reports_controller_state(self) -> None:
         async def run_test() -> None:
             parsed = ParsedMessageEvent(
                 event_id="evt-4",
@@ -142,6 +142,38 @@ class BrowserCommandTests(unittest.TestCase):
                 chat_id="oc_1",
                 chat_type="p2p",
                 message_id="om_4",
+                text="/browser status",
+                attachments=[],
+            )
+
+            with patch.object(app_module.feishu_client, "send_text", new=AsyncMock()) as send_text, patch(
+                "agent.browser_client.browser_client.get_session",
+                new=AsyncMock(
+                    return_value={
+                        "state": "active",
+                        "controller": "human",
+                        "viewer_url": "https://viewer.example.com/session-1",
+                    }
+                ),
+            ):
+                await app_module._dispatch(parsed)
+
+            message = send_text.await_args.args[1]
+            self.assertIn("active", message.lower())
+            self.assertIn("human", message.lower())
+            self.assertIn("旁观/接管链接", message)
+            self.assertIn("https://viewer.example.com/session-1", message)
+
+        asyncio.run(run_test())
+
+    def test_browser_close_closes_active_session(self) -> None:
+        async def run_test() -> None:
+            parsed = ParsedMessageEvent(
+                event_id="evt-5",
+                sender_open_id="ou_user",
+                chat_id="oc_1",
+                chat_type="p2p",
+                message_id="om_5",
                 text="/browser close",
                 attachments=[],
             )

@@ -292,11 +292,12 @@ async def _handle_browser_command(open_id: str, text: str) -> None:
         message = [
             "🌐 浏览器状态",
             f"状态: {session.get('state', 'unknown')}",
+            f"控制方: {session.get('controller', 'unknown')}",
         ]
         if session.get("queue_position"):
             message.append(f"排队位置: {session['queue_position']}")
         if session.get("viewer_url"):
-            message.append(f"旁观链接: {session['viewer_url']}")
+            message.append(f"旁观/接管链接: {session['viewer_url']}")
         await feishu_client.send_text(open_id, "\n".join(message))
         return
 
