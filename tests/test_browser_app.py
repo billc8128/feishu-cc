@@ -122,9 +122,16 @@ class BrowserAppTests(unittest.TestCase):
 
     def test_viewer_takeover_endpoint_uses_viewer_token(self) -> None:
         response = self.client.post("/view/viewer-ou_test/takeover")
+        payload = response.json()
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["controller"], "human")
+        self.assertEqual(payload["controller"], "human")
+        self.assertEqual(
+            set(payload.keys()),
+            {"state", "controller", "paused_reason", "last_control_change_at"},
+        )
+        self.assertNotIn("open_id", payload)
+        self.assertNotIn("viewer_token", payload)
         self.assertEqual(browser_app.manager._session["controller"], "human")
         self.assertEqual(browser_app.manager.viewer_takeover_token, "viewer-ou_test")
 
@@ -136,6 +143,22 @@ class BrowserAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["detail"], "no active browser session for this user")
         self.assertEqual(browser_app.manager.viewer_resume_token, "viewer-ou_test")
+
+    def test_viewer_resume_endpoint_omits_internal_session_fields(self) -> None:
+        browser_app.manager._session["controller"] = "human"
+        browser_app.manager._session["paused_reason"] = "takeover"
+
+        response = self.client.post("/view/viewer-ou_test/resume")
+        payload = response.json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["controller"], "agent")
+        self.assertEqual(
+            set(payload.keys()),
+            {"state", "controller", "paused_reason", "last_control_change_at"},
+        )
+        self.assertNotIn("open_id", payload)
+        self.assertNotIn("viewer_token", payload)
 
     def test_viewer_controls_include_network_failure_fallback(self) -> None:
         response = self.client.get("/view/viewer-ou_test")

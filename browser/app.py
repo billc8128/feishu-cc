@@ -68,6 +68,15 @@ def _translate_session_runtime_error(error: RuntimeError) -> HTTPException:
     return HTTPException(status_code=409, detail=str(error))
 
 
+def _public_viewer_control_payload(session: dict) -> dict:
+    return {
+        "state": session["state"],
+        "controller": session["controller"],
+        "paused_reason": session["paused_reason"],
+        "last_control_change_at": session["last_control_change_at"],
+    }
+
+
 @app.get("/health")
 async def health() -> dict:
     return {"ok": True}
@@ -143,7 +152,8 @@ async def resume_session(open_id: str) -> dict:
 @app.post("/view/{viewer_token}/takeover")
 async def takeover_viewer_session(viewer_token: str) -> dict:
     try:
-        return await manager.takeover_by_viewer_token(viewer_token)
+        session = await manager.takeover_by_viewer_token(viewer_token)
+        return _public_viewer_control_payload(session)
     except RuntimeError as error:
         raise _translate_session_runtime_error(error) from error
 
@@ -151,7 +161,8 @@ async def takeover_viewer_session(viewer_token: str) -> dict:
 @app.post("/view/{viewer_token}/resume")
 async def resume_viewer_session(viewer_token: str) -> dict:
     try:
-        return await manager.resume_by_viewer_token(viewer_token)
+        session = await manager.resume_by_viewer_token(viewer_token)
+        return _public_viewer_control_payload(session)
     except RuntimeError as error:
         raise _translate_session_runtime_error(error) from error
 
