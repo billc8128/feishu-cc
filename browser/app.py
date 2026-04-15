@@ -11,7 +11,11 @@ from pydantic import BaseModel
 
 from browser.config import settings
 from browser.driver import PlaywrightBrowserDriver
-from browser.service import BrowserSessionManager
+from browser.service import (
+    BrowserSessionManager,
+    NO_ACTIVE_SESSION_ERROR,
+    TAKEOVER_PAUSED_ERROR,
+)
 from browser.viewer_page import render_viewer_page
 
 settings.ensure_dirs()
@@ -65,7 +69,19 @@ def _public_base_url(request: Request) -> str:
 
 
 def _translate_session_runtime_error(error: RuntimeError) -> HTTPException:
-    return HTTPException(status_code=409, detail=str(error))
+    detail = str(error)
+    if detail == NO_ACTIVE_SESSION_ERROR:
+        return HTTPException(status_code=404, detail=detail)
+    if detail == TAKEOVER_PAUSED_ERROR:
+        return HTTPException(status_code=409, detail=detail)
+    return HTTPException(status_code=409, detail=detail)
+
+
+async def _run_browser_action(action) -> dict:
+    try:
+        return await action
+    except RuntimeError as error:
+        raise _translate_session_runtime_error(error) from error
 
 
 def _public_viewer_control_payload(session: dict) -> dict:
@@ -110,32 +126,36 @@ async def close_session(open_id: str, request: Request) -> dict:
 
 @app.post("/v1/sessions/{open_id}/navigate", dependencies=[Depends(_require_auth)])
 async def navigate(open_id: str, payload: NavigateRequest) -> dict:
-    return await manager.navigate(open_id, payload.url)
+    return await _run_browser_action(manager.navigate(open_id, payload.url))
 
 
 @app.post("/v1/sessions/{open_id}/click", dependencies=[Depends(_require_auth)])
 async def click(open_id: str, payload: ClickRequest) -> dict:
-    return await manager.click(open_id, payload.selector)
+    return await _run_browser_action(manager.click(open_id, payload.selector))
 
 
 @app.post("/v1/sessions/{open_id}/type", dependencies=[Depends(_require_auth)])
 async def type_text(open_id: str, payload: TypeRequest) -> dict:
-    return await manager.type(open_id, payload.selector, payload.text, clear=payload.clear)
+    return await _run_browser_action(
+        manager.type(open_id, payload.selector, payload.text, clear=payload.clear)
+    )
 
 
 @app.post("/v1/sessions/{open_id}/wait", dependencies=[Depends(_require_auth)])
 async def wait_for(open_id: str, payload: WaitRequest) -> dict:
-    return await manager.wait(
-        open_id,
-        selector=payload.selector,
-        text=payload.text,
-        timeout_ms=payload.timeout_ms,
+    return await _run_browser_action(
+        manager.wait(
+            open_id,
+            selector=payload.selector,
+            text=payload.text,
+            timeout_ms=payload.timeout_ms,
+        )
     )
 
 
 @app.post("/v1/sessions/{open_id}/snapshot", dependencies=[Depends(_require_auth)])
 async def snapshot(open_id: str) -> dict:
-    return await manager.snapshot(open_id)
+    return await _run_browser_action(manager.snapshot(open_id))
 
 
 @app.post("/v1/sessions/{open_id}/takeover", dependencies=[Depends(_require_auth)])

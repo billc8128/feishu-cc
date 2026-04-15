@@ -126,6 +126,19 @@ def render_viewer_page(
         resumeButton.disabled = true;
       }}
 
+      function enterTerminalState(statusText) {{
+        viewerState.controller = "closed";
+        viewerState.interactive = false;
+        frameNode.src = "about:blank";
+        statusNode.textContent = statusText;
+        takeoverButton.disabled = true;
+        resumeButton.disabled = true;
+      }}
+
+      function isTerminalError(detail) {{
+        return detail === "viewer session not found" || detail === "no active browser session for this user";
+      }}
+
       applyControlState(viewerState.controller, viewerState.statusText);
 
       async function sendControlRequest(url, message) {{
@@ -139,6 +152,10 @@ def render_viewer_page(
             payload = {{}};
           }}
           if (!response.ok) {{
+            if (isTerminalError(payload.detail)) {{
+              enterTerminalState("Viewer session ended. Reload to reconnect.");
+              return;
+            }}
             statusNode.textContent = payload.detail || "Unable to update control.";
             return;
           }}

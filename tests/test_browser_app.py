@@ -11,6 +11,7 @@ os.environ.setdefault("DATA_DIR", "/tmp/feishu-cc-browser-test-data")
 
 browser_app = importlib.import_module("browser.app")
 viewer_page = importlib.import_module("browser.viewer_page")
+browser_service = importlib.import_module("browser.service")
 
 
 class _FakeManager:
@@ -30,6 +31,7 @@ class _FakeManager:
         self.viewer_resume_token = None
         self.viewer_lookup_token = None
         self.viewer_interact_token = None
+        self.raise_on_action = None
 
     async def get_session(self, open_id: str):
         if open_id == self._session["open_id"]:
@@ -82,6 +84,31 @@ class _FakeManager:
         if viewer_token != self._session["viewer_token"]:
             raise RuntimeError("viewer session not found")
         return await self.resume(self._session["open_id"])
+
+    async def navigate(self, open_id: str, url: str):
+        if self.raise_on_action:
+            raise RuntimeError(self.raise_on_action)
+        return {"url": url}
+
+    async def click(self, open_id: str, selector: str):
+        if self.raise_on_action:
+            raise RuntimeError(self.raise_on_action)
+        return {"clicked": selector}
+
+    async def type(self, open_id: str, selector: str, text: str, *, clear: bool):
+        if self.raise_on_action:
+            raise RuntimeError(self.raise_on_action)
+        return {"typed": text}
+
+    async def wait(self, open_id: str, *, selector: str = "", text: str = "", timeout_ms: int = 10_000):
+        if self.raise_on_action:
+            raise RuntimeError(self.raise_on_action)
+        return {"waited": selector}
+
+    async def snapshot(self, open_id: str):
+        if self.raise_on_action:
+            raise RuntimeError(self.raise_on_action)
+        return {"open_id": open_id}
 
 
 class BrowserAppTests(unittest.TestCase):
@@ -154,7 +181,7 @@ class BrowserAppTests(unittest.TestCase):
 
         response = self.client.post("/v1/sessions/ou_test/takeover", headers=self.headers)
 
-        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json()["detail"], "no active browser session for this user")
 
     def test_resume_runtime_error_returns_conflict_instead_of_500(self) -> None:
@@ -162,8 +189,31 @@ class BrowserAppTests(unittest.TestCase):
 
         response = self.client.post("/v1/sessions/ou_test/resume", headers=self.headers)
 
-        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json()["detail"], "no active browser session for this user")
+
+    def test_paused_browser_actions_return_conflict_instead_of_500(self) -> None:
+        browser_app.manager.raise_on_action = browser_service.TAKEOVER_PAUSED_ERROR
+
+        responses = [
+            self.client.post("/v1/sessions/ou_test/navigate", headers=self.headers, json={"url": "https://example.com"}),
+            self.client.post("/v1/sessions/ou_test/click", headers=self.headers, json={"selector": "#cta"}),
+            self.client.post(
+                "/v1/sessions/ou_test/type",
+                headers=self.headers,
+                json={"selector": "#q", "text": "hello", "clear": True},
+            ),
+            self.client.post(
+                "/v1/sessions/ou_test/wait",
+                headers=self.headers,
+                json={"selector": "#q", "text": "", "timeout_ms": 1000},
+            ),
+            self.client.post("/v1/sessions/ou_test/snapshot", headers=self.headers),
+        ]
+
+        for response in responses:
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(response.json()["detail"], browser_service.TAKEOVER_PAUSED_ERROR)
 
     def test_viewer_takeover_endpoint_uses_viewer_token(self) -> None:
         response = self.client.post("/view/viewer-ou_test/takeover")
@@ -185,7 +235,7 @@ class BrowserAppTests(unittest.TestCase):
 
         response = self.client.post("/view/viewer-ou_test/resume")
 
-        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json()["detail"], "no active browser session for this user")
         self.assertEqual(browser_app.manager.viewer_resume_token, "viewer-ou_test")
 
@@ -236,6 +286,10 @@ class BrowserAppTests(unittest.TestCase):
         self.assertIn("resumeButton.disabled = false;", response.text)
         self.assertIn("takeoverButton.disabled = false;", response.text)
         self.assertIn("resumeButton.disabled = true;", response.text)
+        self.assertIn("function enterTerminalState(statusText)", response.text)
+        self.assertIn('frameNode.src = "about:blank";', response.text)
+        self.assertIn("Viewer session ended. Reload to reconnect.", response.text)
+        self.assertIn("enterTerminalState", response.text)
 
     def test_render_viewer_page_escapes_quote_and_newline_tokens_safely(self) -> None:
         html = viewer_page.render_viewer_page(
