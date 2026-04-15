@@ -45,6 +45,15 @@ _seen_events = _LRUSet(capacity=2048)
 # ---------- 解析后的事件结构 ----------
 
 @dataclass
+class IncomingAttachment:
+    kind: str
+    file_key: str
+    message_resource_type: str
+    file_name: str | None = None
+    file_type: str | None = None
+
+
+@dataclass
 class ParsedMessageEvent:
     """业务层关心的字段都拍平在这里,不再依赖 lark 的嵌套类型。"""
 
@@ -54,6 +63,7 @@ class ParsedMessageEvent:
     chat_type: str  # "p2p" 或 "group"
     message_id: str
     text: str  # 已剥离 @机器人 前缀的纯文本
+    attachments: list[IncomingAttachment]
 
 
 # ---------- URL 验证(飞书后台首次配 webhook 时的握手) ----------
@@ -105,18 +115,22 @@ def parse_message_event(body: dict) -> Optional[ParsedMessageEvent]:
     message_id = message.get("message_id", "")
     msg_type = message.get("message_type", "")
 
-    if msg_type != "text":
-        # 首版只处理文本消息
+    text = ""
+    attachments: list[IncomingAttachment] = []
+    if msg_type == "text":
+        text = _parse_text_content(message)
+    elif msg_type == "image":
+        attachment = _parse_image_attachment(message)
+        if not attachment:
+            return None
+        attachments.append(attachment)
+    elif msg_type == "file":
+        attachment = _parse_file_attachment(message)
+        if not attachment:
+            return None
+        attachments.append(attachment)
+    else:
         return None
-
-    # content 是 JSON 字符串: {"text": "..."}
-    try:
-        content_obj = json.loads(message.get("content", "{}"))
-    except json.JSONDecodeError:
-        return None
-
-    text = content_obj.get("text", "").strip()
-    text = _strip_at_bot(text)
 
     return ParsedMessageEvent(
         event_id=event_id,
@@ -125,6 +139,7 @@ def parse_message_event(body: dict) -> Optional[ParsedMessageEvent]:
         chat_type=chat_type,
         message_id=message_id,
         text=text,
+        attachments=attachments,
     )
 
 
@@ -133,6 +148,85 @@ def _strip_at_bot(text: str) -> str:
     parts = text.split()
     parts = [p for p in parts if not p.startswith("@_user_")]
     return " ".join(parts).strip()
+
+
+def _parse_text_content(message: dict) -> str:
+    try:
+        content_obj = json.loads(message.get("content", "{}"))
+    except json.JSONDecodeError:
+        return ""
+    return _strip_at_bot(content_obj.get("text", "").strip())
+
+
+def _parse_image_attachment(message: dict) -> IncomingAttachment | None:
+    try:
+        content_obj = json.loads(message.get("content", "{}"))
+    except json.JSONDecodeError:
+        return None
+
+    image_key = content_obj.get("image_key")
+    if not image_key:
+        return None
+    return IncomingAttachment(
+        kind="image",
+        file_key=image_key,
+        message_resource_type="image",
+        file_name=content_obj.get("file_name"),
+        file_type=content_obj.get("file_type"),
+    )
+
+
+def _parse_file_attachment(message: dict) -> IncomingAttachment | None:
+    try:
+        content_obj = json.loads(message.get("content", "{}"))
+    except json.JSONDecodeError:
+        return None
+
+    file_key = content_obj.get("file_key")
+    if not file_key:
+        return None
+
+    file_name = content_obj.get("file_name")
+    file_type = content_obj.get("file_type")
+    return IncomingAttachment(
+        kind=_classify_file_kind(file_name, file_type),
+        file_key=file_key,
+        message_resource_type="file",
+        file_name=file_name,
+        file_type=file_type,
+    )
+
+
+def _classify_file_kind(file_name: str | None, file_type: str | None) -> str:
+    if file_type and file_type.lower() in {
+        "mp4",
+        "mov",
+        "avi",
+        "mkv",
+        "webm",
+        "mpeg",
+        "mpg",
+        "wmv",
+        "m4v",
+    }:
+        return "video"
+
+    if file_name:
+        suffix = file_name.rsplit(".", 1)
+        if len(suffix) == 2 and suffix[1].lower() in {
+            "mp4",
+            "mov",
+            "avi",
+            "mkv",
+            "webm",
+            "mpeg",
+            "mpg",
+            "wmv",
+            "m4v",
+        }:
+            return "video"
+
+    return "file"
 
 
 # ---------- 准入校验 ----------
