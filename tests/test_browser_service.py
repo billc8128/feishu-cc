@@ -222,6 +222,20 @@ class BrowserServiceTests(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_get_session_by_viewer_token_returns_active_session(self) -> None:
+        async def run_test() -> None:
+            session = await self.manager.ensure_session(
+                "ou_a", public_base_url="https://browser.example.com"
+            )
+
+            looked_up = await self.manager.get_session_by_viewer_token(session["viewer_token"])
+
+            self.assertIsNotNone(looked_up)
+            self.assertEqual(looked_up["open_id"], "ou_a")
+            self.assertEqual(looked_up["controller"], "agent")
+
+        asyncio.run(run_test())
+
     def test_resume_by_viewer_token_rejects_unknown_viewer_token(self) -> None:
         async def run_test() -> None:
             await self.manager.ensure_session("ou_a", public_base_url="https://browser.example.com")

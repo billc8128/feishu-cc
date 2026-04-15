@@ -14,21 +14,28 @@ viewer_page = importlib.import_module("browser.viewer_page")
 class _FakeManager:
     def __init__(self) -> None:
         self._session = {
-                "open_id": "ou_test",
-                "state": "active",
-                "controller": "agent",
-                "paused_reason": "",
-                "last_control_change_at": 0.0,
-                "viewer_url": "https://browser.example.com/view/viewer-ou_test",
-                "viewer_token": "viewer-ou_test",
+            "open_id": "ou_test",
+            "state": "active",
+            "controller": "agent",
+            "paused_reason": "",
+            "last_control_change_at": 0.0,
+            "viewer_url": "https://browser.example.com/view/viewer-ou_test",
+            "viewer_token": "viewer-ou_test",
         }
         self.raise_on_takeover = False
         self.raise_on_resume = False
         self.viewer_takeover_token = None
         self.viewer_resume_token = None
+        self.viewer_lookup_token = None
 
     async def get_session(self, open_id: str):
         if open_id == self._session["open_id"]:
+            return dict(self._session)
+        return None
+
+    async def get_session_by_viewer_token(self, viewer_token: str):
+        self.viewer_lookup_token = viewer_token
+        if viewer_token == self._session["viewer_token"]:
             return dict(self._session)
         return None
 
@@ -86,6 +93,28 @@ class BrowserAppTests(unittest.TestCase):
         self.assertIn("view_only=1", response.text)
         self.assertIn("/view/viewer-ou_test/takeover", response.text)
         self.assertIn("/view/viewer-ou_test/resume", response.text)
+        self.assertEqual(browser_app.manager.viewer_lookup_token, "viewer-ou_test")
+
+    def test_view_starts_interactive_when_session_is_human_controlled(self) -> None:
+        browser_app.manager._session["controller"] = "human"
+        browser_app.manager._session["paused_reason"] = "takeover"
+        browser_app.manager._session["last_control_change_at"] = 123.0
+
+        response = self.client.get("/view/viewer-ou_test", follow_redirects=False)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            "Human takeover active. Agent control is paused.",
+            response.text,
+        )
+        self.assertIn(
+            'src="/novnc/vnc_lite.html?path=ws/viewer-ou_test&amp;autoconnect=1&amp;resize=scale"',
+            response.text,
+        )
+        self.assertNotIn(
+            'src="/novnc/vnc_lite.html?path=ws/viewer-ou_test&amp;autoconnect=1&amp;view_only=1&amp;resize=scale"',
+            response.text,
+        )
 
     def test_takeover_switches_session_controller_to_human(self) -> None:
         response = self.client.post("/v1/sessions/ou_test/takeover", headers=self.headers)
@@ -143,6 +172,13 @@ class BrowserAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["detail"], "no active browser session for this user")
         self.assertEqual(browser_app.manager.viewer_resume_token, "viewer-ou_test")
+
+    def test_view_unknown_viewer_token_returns_not_found(self) -> None:
+        response = self.client.get("/view/viewer-missing")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "viewer session not found")
+        self.assertEqual(browser_app.manager.viewer_lookup_token, "viewer-missing")
 
     def test_viewer_resume_endpoint_omits_internal_session_fields(self) -> None:
         browser_app.manager._session["controller"] = "human"
