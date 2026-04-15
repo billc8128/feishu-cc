@@ -52,6 +52,7 @@ class SessionRecord:
     open_id: str
     state: str
     profile_dir: Path
+    public_base_url: str
     created_at: float
     last_used_at: float
     controller: str = AGENT_CONTROLLER
@@ -99,6 +100,7 @@ class BrowserSessionManager:
                         open_id=open_id,
                         state=QUEUED_SESSION_STATE,
                         profile_dir=self._profile_dir(open_id),
+                        public_base_url=public_base_url,
                         created_at=time.monotonic(),
                         last_used_at=time.monotonic(),
                     )
@@ -239,6 +241,7 @@ class BrowserSessionManager:
             open_id=open_id,
             state=ACTIVE_SESSION_STATE,
             profile_dir=profile_dir,
+            public_base_url=public_base_url,
             created_at=time.monotonic(),
             last_used_at=time.monotonic(),
             viewer_token=str(driver_result.get("viewer_token", "")),
@@ -304,15 +307,10 @@ class BrowserSessionManager:
             self._active_open_id = None
             return
         if self._session_is_expired_locked(record):
-            await self._close_session_locked(open_id, self._public_base_url_for_locked(record))
+            await self._close_session_locked(open_id, record.public_base_url)
 
     def _session_is_expired_locked(self, record: SessionRecord) -> bool:
         now = time.monotonic()
         idle_expired = (now - record.last_used_at) >= self._idle_timeout_seconds
         ttl_expired = (now - record.created_at) >= self._max_session_ttl_seconds
         return idle_expired or ttl_expired
-
-    def _public_base_url_for_locked(self, record: SessionRecord) -> str:
-        if "/view/" in record.viewer_url:
-            return record.viewer_url.rsplit("/view/", 1)[0]
-        return ""

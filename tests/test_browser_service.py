@@ -136,17 +136,24 @@ class BrowserServiceTests(unittest.TestCase):
             with mock.patch.object(browser_service.time, "monotonic", side_effect=fake_monotonic):
                 await manager.ensure_session("ou_a", public_base_url="https://browser.example.com")
                 first = await manager.takeover("ou_a")
-                first_record = manager._sessions["ou_a"]
+                first_snapshot = {
+                    "controller": manager._sessions["ou_a"].controller,
+                    "paused_reason": manager._sessions["ou_a"].paused_reason,
+                    "last_control_change_at": manager._sessions["ou_a"].last_control_change_at,
+                    "last_used_at": manager._sessions["ou_a"].last_used_at,
+                }
 
                 clock["now"] = 101.0
                 second = await manager.takeover("ou_a")
-                second_record = manager._sessions["ou_a"]
+                second_snapshot = {
+                    "controller": manager._sessions["ou_a"].controller,
+                    "paused_reason": manager._sessions["ou_a"].paused_reason,
+                    "last_control_change_at": manager._sessions["ou_a"].last_control_change_at,
+                    "last_used_at": manager._sessions["ou_a"].last_used_at,
+                }
 
             self.assertEqual(second, first)
-            self.assertEqual(second_record.controller, first_record.controller)
-            self.assertEqual(second_record.paused_reason, first_record.paused_reason)
-            self.assertEqual(second_record.last_control_change_at, first_record.last_control_change_at)
-            self.assertEqual(second_record.last_used_at, first_record.last_used_at)
+            self.assertEqual(second_snapshot, first_snapshot)
 
         asyncio.run(run_test())
 
@@ -212,6 +219,36 @@ class BrowserServiceTests(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_takeover_expires_stale_session_and_promotes_queued_follower(self) -> None:
+        async def run_test() -> None:
+            clock = {"now": 300.0}
+
+            def fake_monotonic() -> float:
+                return clock["now"]
+
+            manager = browser_service.BrowserSessionManager(
+                data_dir=Path(self._tmp.name),
+                driver=self.driver,
+                idle_timeout_seconds=5,
+                max_session_ttl_seconds=1800,
+            )
+
+            with mock.patch.object(browser_service.time, "monotonic", side_effect=fake_monotonic):
+                await manager.ensure_session("ou_a", public_base_url="https://browser.example.com")
+                await manager.ensure_session("ou_b", public_base_url="https://browser.example.com")
+                clock["now"] = 306.0
+
+                with self.assertRaisesRegex(RuntimeError, "no active browser session for this user"):
+                    await manager.takeover("ou_a")
+
+            promoted = await manager.get_session("ou_b")
+            self.assertEqual(self.driver.stopped, ["ou_a"])
+            self.assertEqual(promoted["state"], "active")
+            self.assertEqual(promoted["viewer_url"], "https://browser.example.com/view/ou_b")
+            self.assertEqual([item[0] for item in self.driver.started], ["ou_a", "ou_b"])
+
+        asyncio.run(run_test())
+
     def test_resume_switches_controller_back_to_agent(self) -> None:
         async def run_test() -> None:
             await self.manager.ensure_session("ou_a", public_base_url="https://browser.example.com")
@@ -244,17 +281,24 @@ class BrowserServiceTests(unittest.TestCase):
             with mock.patch.object(browser_service.time, "monotonic", side_effect=fake_monotonic):
                 await manager.ensure_session("ou_a", public_base_url="https://browser.example.com")
                 first = await manager.resume("ou_a")
-                first_record = manager._sessions["ou_a"]
+                first_snapshot = {
+                    "controller": manager._sessions["ou_a"].controller,
+                    "paused_reason": manager._sessions["ou_a"].paused_reason,
+                    "last_control_change_at": manager._sessions["ou_a"].last_control_change_at,
+                    "last_used_at": manager._sessions["ou_a"].last_used_at,
+                }
 
                 clock["now"] = 201.0
                 second = await manager.resume("ou_a")
-                second_record = manager._sessions["ou_a"]
+                second_snapshot = {
+                    "controller": manager._sessions["ou_a"].controller,
+                    "paused_reason": manager._sessions["ou_a"].paused_reason,
+                    "last_control_change_at": manager._sessions["ou_a"].last_control_change_at,
+                    "last_used_at": manager._sessions["ou_a"].last_used_at,
+                }
 
             self.assertEqual(second, first)
-            self.assertEqual(second_record.controller, first_record.controller)
-            self.assertEqual(second_record.paused_reason, first_record.paused_reason)
-            self.assertEqual(second_record.last_control_change_at, first_record.last_control_change_at)
-            self.assertEqual(second_record.last_used_at, first_record.last_used_at)
+            self.assertEqual(second_snapshot, first_snapshot)
 
         asyncio.run(run_test())
 
