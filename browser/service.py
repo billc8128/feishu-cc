@@ -89,6 +89,7 @@ class BrowserSessionManager:
             existing = self._sessions.get(open_id)
             if existing:
                 if existing.state == QUEUED_SESSION_STATE:
+                    existing.public_base_url = public_base_url
                     return self._serialize(existing)
                 if self._active_open_id == open_id:
                     existing.last_used_at = time.monotonic()

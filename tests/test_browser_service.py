@@ -80,6 +80,21 @@ class BrowserServiceTests(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_requeued_user_updates_base_url_before_promotion(self) -> None:
+        async def run_test() -> None:
+            await self.manager.ensure_session("ou_a", public_base_url="https://browser-a.example.com")
+            await self.manager.ensure_session("ou_b", public_base_url="https://browser-b-old.example.com")
+            await self.manager.ensure_session("ou_b", public_base_url="https://browser-b-new.example.com")
+
+            await self.manager.close_session("ou_a", public_base_url="https://browser-a.example.com")
+            promoted = await self.manager.get_session("ou_b")
+
+            self.assertEqual(promoted["state"], "active")
+            self.assertEqual(promoted["viewer_url"], "https://browser-b-new.example.com/view/ou_b")
+            self.assertEqual(self.driver.started[-1][2], "https://browser-b-new.example.com")
+
+        asyncio.run(run_test())
+
     def test_same_user_reuses_existing_session(self) -> None:
         async def run_test() -> None:
             first = await self.manager.ensure_session("ou_a", public_base_url="https://browser.example.com")
