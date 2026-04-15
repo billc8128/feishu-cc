@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nodejs \
     npm \
     build-essential \
+    ffmpeg \
     gosu \
  && rm -rf /var/lib/apt/lists/*
 

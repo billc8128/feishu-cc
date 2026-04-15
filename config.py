@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     anthropic_default_haiku_model: str = "glm-4.5-air"
     api_timeout_ms: str = "3000000"
     claude_code_disable_nonessential_traffic: str = "1"
+    glm_vision_model: str = "glm-5v-turbo"
+    glm_vision_base_url: str = "https://api.z.ai/api/paas/v4/chat/completions"
 
     # 飞书
     feishu_app_id: str
