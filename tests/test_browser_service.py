@@ -18,6 +18,10 @@ class _FakeDriver:
         self.started = []
         self.stopped = []
         self.navigated = []
+        self.clicked = []
+        self.typed = []
+        self.waited = []
+        self.snapshotted = []
 
     async def start(self, *, open_id: str, profile_dir: Path, public_base_url: str):
         self.started.append((open_id, str(profile_dir), public_base_url))
@@ -32,6 +36,22 @@ class _FakeDriver:
     async def navigate(self, open_id: str, url: str):
         self.navigated.append((open_id, url))
         return {"url": url}
+
+    async def click(self, open_id: str, selector: str):
+        self.clicked.append((open_id, selector))
+        return {"clicked": selector}
+
+    async def type(self, open_id: str, selector: str, text: str, *, clear: bool):
+        self.typed.append((open_id, selector, text, clear))
+        return {"typed": text}
+
+    async def wait(self, open_id: str, *, selector: str, text: str, timeout_ms: int):
+        self.waited.append((open_id, selector, text, timeout_ms))
+        return {"waited": selector}
+
+    async def snapshot(self, open_id: str):
+        self.snapshotted.append(open_id)
+        return {"open_id": open_id}
 
 
 class BrowserServiceTests(unittest.TestCase):
@@ -105,6 +125,32 @@ class BrowserServiceTests(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_ensure_session_does_not_refresh_human_controlled_activity(self) -> None:
+        async def run_test() -> None:
+            clock = {"now": 100.0}
+
+            def fake_monotonic() -> float:
+                return clock["now"]
+
+            manager = browser_service.BrowserSessionManager(
+                data_dir=Path(self._tmp.name),
+                driver=self.driver,
+                idle_timeout_seconds=300,
+                max_session_ttl_seconds=1800,
+            )
+
+            with mock.patch.object(browser_service.time, "monotonic", side_effect=fake_monotonic):
+                await manager.ensure_session("ou_a", public_base_url="https://browser.example.com")
+                await manager.takeover("ou_a")
+                human_last_used_at = manager._sessions["ou_a"].last_used_at
+
+                clock["now"] = 101.0
+                await manager.ensure_session("ou_a", public_base_url="https://browser.example.com")
+
+            self.assertEqual(manager._sessions["ou_a"].last_used_at, human_last_used_at)
+
+        asyncio.run(run_test())
+
     def test_close_promotes_next_queued_user(self) -> None:
         async def run_test() -> None:
             await self.manager.ensure_session("ou_a", public_base_url="https://browser.example.com")
@@ -117,6 +163,20 @@ class BrowserServiceTests(unittest.TestCase):
             self.assertEqual(next_session["state"], "active")
             self.assertEqual(self.driver.stopped, ["ou_a"])
             self.assertEqual([item[0] for item in self.driver.started], ["ou_a", "ou_b"])
+
+        asyncio.run(run_test())
+
+    def test_closed_payload_is_normalized_after_takeover(self) -> None:
+        async def run_test() -> None:
+            await self.manager.ensure_session("ou_a", public_base_url="https://browser.example.com")
+            await self.manager.takeover("ou_a")
+
+            closed = await self.manager.close_session("ou_a", public_base_url="https://browser.example.com")
+
+            self.assertEqual(closed["state"], "closed")
+            self.assertEqual(closed["controller"], "agent")
+            self.assertEqual(closed["paused_reason"], "")
+            self.assertEqual(closed["last_control_change_at"], 0.0)
 
         asyncio.run(run_test())
 
@@ -397,8 +457,21 @@ class BrowserServiceTests(unittest.TestCase):
             await self.manager.ensure_session("ou_a", public_base_url="https://browser.example.com")
             await self.manager.takeover("ou_a")
 
-            with self.assertRaisesRegex(RuntimeError, "BROWSER_PAUSED_FOR_TAKEOVER"):
-                await self.manager.navigate("ou_a", "https://example.com")
+            for action in (
+                lambda: self.manager.navigate("ou_a", "https://example.com"),
+                lambda: self.manager.click("ou_a", "button.submit"),
+                lambda: self.manager.type("ou_a", "input.name", "hello", clear=True),
+                lambda: self.manager.wait("ou_a", selector="body", text="ready", timeout_ms=1_000),
+                lambda: self.manager.snapshot("ou_a"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "BROWSER_PAUSED_FOR_TAKEOVER"):
+                    await action()
+
+            self.assertEqual(self.driver.navigated, [])
+            self.assertEqual(self.driver.clicked, [])
+            self.assertEqual(self.driver.typed, [])
+            self.assertEqual(self.driver.waited, [])
+            self.assertEqual(self.driver.snapshotted, [])
 
         asyncio.run(run_test())
 

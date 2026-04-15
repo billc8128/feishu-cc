@@ -92,7 +92,8 @@ class BrowserSessionManager:
                     existing.public_base_url = public_base_url
                     return self._serialize(existing)
                 if self._active_open_id == open_id:
-                    existing.last_used_at = time.monotonic()
+                    if existing.controller != HUMAN_CONTROLLER:
+                        existing.last_used_at = time.monotonic()
                     return self._serialize(existing)
 
             if self._active_open_id and self._active_open_id != open_id:
@@ -224,6 +225,9 @@ class BrowserSessionManager:
         await self._driver.stop(open_id)
         self._active_open_id = None
         record.state = CLOSED_SESSION_STATE
+        record.controller = AGENT_CONTROLLER
+        record.paused_reason = ""
+        record.last_control_change_at = 0.0
         closed = self._serialize(record)
         self._sessions.pop(open_id, None)
         if self._queue:
