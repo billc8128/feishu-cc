@@ -43,6 +43,8 @@ class PlaywrightBrowserDriver:
         if self._running:
             await self.stop(self._running.open_id)
 
+        self._cleanup_profile_locks(profile_dir)
+
         env = os.environ.copy()
         env["DISPLAY"] = self.display
         env["HOME"] = str(profile_dir)
@@ -240,6 +242,12 @@ class PlaywrightBrowserDriver:
 
     async def _wait_for_x11(self) -> None:
         await asyncio.sleep(1.0)
+
+    def _cleanup_profile_locks(self, profile_dir: Path) -> None:
+        for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+            path = profile_dir / name
+            with contextlib.suppress(FileNotFoundError):
+                path.unlink()
 
     async def _wait_for_port(self, port: int, *, timeout_seconds: float = 15.0) -> None:
         deadline = asyncio.get_running_loop().time() + timeout_seconds
