@@ -84,27 +84,23 @@ class FeishuClient:
           客户端会自动给代码块加复制按钮,不需要我们额外做 action 元素
         - 飞书卡片单条总 JSON 长度大约不能超过 30KB,超长文本我们先截断
         """
-        # 粗略防御:markdown 内容超过 20KB 就截断(给卡片 JSON 包装留余地)
-        if len(md) > 20000:
-            md = md[:20000] + "\n\n…(内容过长已截断)"
-
-        card: dict = {
-            "config": {"wide_screen_mode": True},
-            "elements": [
-                {"tag": "markdown", "content": md},
-            ],
-        }
-        if title:
-            card["header"] = {
-                "title": {"tag": "plain_text", "content": title},
-                "template": "blue",
-            }
-
         return await self._create_message(
             receive_id_type="open_id",
             receive_id=open_id,
             msg_type="interactive",
-            content=json.dumps(card, ensure_ascii=False),
+            content=self._markdown_card_content(md, title=title),
+        )
+
+    async def update_markdown(
+        self,
+        message_id: str,
+        md: str,
+        title: Optional[str] = None,
+    ) -> bool:
+        """更新已发送的 Markdown 卡片。"""
+        return await self._patch_message_content(
+            message_id,
+            self._markdown_card_content(md, title=title),
         )
 
     async def send_browser_approval_card(
@@ -327,12 +323,37 @@ class FeishuClient:
         if len(text) > 28000:
             text = text[:28000] + "\n\n…(消息过长已截断)"
 
+        return await self._patch_message_content(
+            message_id,
+            json.dumps({"text": text}, ensure_ascii=False),
+        )
+
+    # ---------- 内部 ----------
+
+    def _markdown_card_content(self, md: str, *, title: Optional[str] = None) -> str:
+        if len(md) > 20000:
+            md = md[:20000] + "\n\n…(内容过长已截断)"
+
+        card: dict = {
+            "config": {"wide_screen_mode": True, "update_multi": True},
+            "elements": [
+                {"tag": "markdown", "content": md},
+            ],
+        }
+        if title:
+            card["header"] = {
+                "title": {"tag": "plain_text", "content": title},
+                "template": "blue",
+            }
+        return json.dumps(card, ensure_ascii=False)
+
+    async def _patch_message_content(self, message_id: str, content: str) -> bool:
         req = (
             PatchMessageRequest.builder()
             .message_id(message_id)
             .request_body(
                 PatchMessageRequestBody.builder()
-                .content(json.dumps({"text": text}, ensure_ascii=False))
+                .content(content)
                 .build()
             )
             .build()
@@ -344,8 +365,6 @@ class FeishuClient:
             )
             return False
         return True
-
-    # ---------- 内部 ----------
 
     async def _create_message(
         self,

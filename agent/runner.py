@@ -172,6 +172,8 @@ SYSTEM_PROMPT = """你正在一台运行在 Docker 容器里的 Linux 服务器�
 
 _STDERR_BUFFER_LINES = 50
 _stderr_buffers: Dict[str, Deque[str]] = {}
+_RUN_CARD_UPDATE_INTERVAL_SECONDS = 1.5
+_RUN_CARD_RECENT_ACTION_LIMIT = 5
 
 
 def _make_stderr_collector(open_id: str):
@@ -210,6 +212,155 @@ def _format_error_for_user(exc: Exception, open_id: str) -> str:
             stderr_text = "…(前略)…\n" + stderr_text[-1500:]
         return f"{base}\n\n--- CLI stderr ---\n{stderr_text}"
     return base
+
+
+@dataclass
+class _RunCardAction:
+    text: str
+    count: int = 1
+
+
+class _RunProgressCard:
+    def __init__(self, open_id: str) -> None:
+        self._open_id = open_id
+        self._message_id: Optional[str] = None
+        self._last_flush_at = 0.0
+        self._last_title = ""
+        self._last_markdown = ""
+        self._status = "正在执行工具"
+        self._current_action = "等待下一步"
+        self._error_count = 0
+        self._bucket_counts: Dict[str, int] = {}
+        self._recent_actions: Deque[_RunCardAction] = deque(
+            maxlen=_RUN_CARD_RECENT_ACTION_LIMIT
+        )
+
+    def note_tool_use(self, block: ToolUseBlock) -> bool:
+        tip = _format_tool_use(block)
+        if not tip:
+            return False
+
+        self._status = "正在执行工具"
+        self._current_action = tip
+        bucket = _tool_bucket_name(block.name)
+        self._bucket_counts[bucket] = self._bucket_counts.get(bucket, 0) + 1
+        if self._recent_actions and self._recent_actions[-1].text == tip:
+            self._recent_actions[-1].count += 1
+        else:
+            self._recent_actions.append(_RunCardAction(text=tip))
+        return True
+
+    def note_tool_error(self) -> None:
+        self._error_count += 1
+        self._status = "工具调用出错，Claude 正在重试或换方法"
+
+    async def flush(self, *, force: bool = False) -> None:
+        title, markdown = self._render()
+        now = time.monotonic()
+
+        if not self._message_id:
+            message_id = await feishu_client.send_markdown(
+                self._open_id,
+                markdown,
+                title=title,
+            )
+            if message_id:
+                self._message_id = message_id
+                self._last_flush_at = now
+                self._last_title = title
+                self._last_markdown = markdown
+            return
+
+        if not force and now - self._last_flush_at < _RUN_CARD_UPDATE_INTERVAL_SECONDS:
+            return
+        if title == self._last_title and markdown == self._last_markdown:
+            return
+        ok = await feishu_client.update_markdown(
+            self._message_id,
+            markdown,
+            title=title,
+        )
+        if ok:
+            self._last_flush_at = now
+            self._last_title = title
+            self._last_markdown = markdown
+
+    async def finish(
+        self,
+        *,
+        outcome: str,
+        detail: str = "",
+        final_text_present: bool = False,
+    ) -> None:
+        if not self._message_id:
+            return
+        title, markdown = self._render(
+            outcome=outcome,
+            detail=detail,
+            final_text_present=final_text_present,
+        )
+        if title == self._last_title and markdown == self._last_markdown:
+            return
+        ok = await feishu_client.update_markdown(
+            self._message_id,
+            markdown,
+            title=title,
+        )
+        if ok:
+            self._last_title = title
+            self._last_markdown = markdown
+
+    def _render(
+        self,
+        *,
+        outcome: Optional[str] = None,
+        detail: str = "",
+        final_text_present: bool = False,
+    ) -> tuple[str, str]:
+        title = "任务运行中"
+        status_text = self._status
+        if outcome == "success":
+            title = "任务完成"
+            status_text = "已完成"
+        elif outcome == "error":
+            title = "任务失败"
+            status_text = "执行失败"
+        elif outcome == "interrupted":
+            title = "任务已中断"
+            status_text = "已中断"
+
+        lines = [f"**状态**：{status_text}"]
+        if detail:
+            lines.append(f"**说明**：{detail}")
+
+        current_label = "当前动作" if outcome is None else "最后动作"
+        if self._current_action:
+            lines.append(f"**{current_label}**：{self._current_action}")
+
+        summary = self._render_summary()
+        if summary:
+            lines.append(f"**统计**：{summary}")
+
+        if self._recent_actions:
+            lines.append("**最近步骤**")
+            for action in self._recent_actions:
+                suffix = f" ×{action.count}" if action.count > 1 else ""
+                lines.append(f"- {action.text}{suffix}")
+
+        if self._error_count:
+            lines.append(f"**工具重试**：{self._error_count} 次")
+        if outcome == "success" and final_text_present:
+            lines.append("结果已在下方消息中给出。")
+
+        return title, "\n".join(lines)
+
+    def _render_summary(self) -> str:
+        ordered = []
+        for bucket in ("浏览器", "执行", "文件", "网络", "子代理", "定时任务", "交付", "其他"):
+            count = self._bucket_counts.get(bucket)
+            if count:
+                ordered.append(f"{bucket} {count}")
+        return " · ".join(ordered)
 
 
 def _encoded_cwd_dir(project_root: str) -> Path:
@@ -572,6 +723,7 @@ async def _run_query(
     open_id: str, project: str, pooled: _PooledClient, text: str
 ) -> None:
     client = pooled.client
+    progress_card = _RunProgressCard(open_id)
 
     try:
         await client.query(text)
@@ -584,7 +736,6 @@ async def _run_query(
 
     # 累积本轮的文本回复;工具调用过程实时推送
     text_buffer: list[str] = []
-    last_tool_msg_at = 0.0
 
     try:
         async for msg in client.receive_response():
@@ -596,19 +747,12 @@ async def _run_query(
                         # 不推送 thinking 到飞书,太啰嗦
                         pass
                     elif isinstance(block, ToolUseBlock):
-                        # 推送工具调用进度,但限频
-                        now = time.monotonic()
-                        if now - last_tool_msg_at >= 0.5:
-                            last_tool_msg_at = now
-                            tip = _format_tool_use(block)
-                            if tip:
-                                await feishu_client.send_text(open_id, tip)
+                        if progress_card.note_tool_use(block):
+                            await progress_card.flush()
                     elif isinstance(block, ToolResultBlock):
-                        # 工具结果不推送(避免刷屏),只在出错时提示
                         if block.is_error:
-                            await feishu_client.send_text(
-                                open_id, "⚠️ 工具调用出错,Claude 会自己重试或换方法"
-                            )
+                            progress_card.note_tool_error()
+                            await progress_card.flush(force=True)
 
             elif isinstance(msg, ResultMessage):
                 if msg.session_id:
@@ -632,24 +776,40 @@ async def _run_query(
 
                 # 显示成本/状态(可选)
                 if msg.is_error:
+                    await progress_card.finish(
+                        outcome="error",
+                        detail=msg.subtype or "任务异常结束",
+                        final_text_present=bool(final_text),
+                    )
                     await feishu_client.send_text(
                         open_id,
                         f"❌ 任务结束(异常):{msg.subtype}",
                     )
                 elif msg.total_cost_usd:
+                    await progress_card.finish(
+                        outcome="success",
+                        final_text_present=bool(final_text),
+                    )
                     logger.info(
                         "turn done: tokens=%s cost=$%.4f",
                         msg.usage,
                         msg.total_cost_usd,
+                    )
+                else:
+                    await progress_card.finish(
+                        outcome="success",
+                        final_text_present=bool(final_text),
                     )
                 break  # 一轮结束,退出 receive 循环
 
             elif isinstance(msg, SystemMessage):
                 pass  # 不展示系统消息
     except asyncio.CancelledError:
+        await progress_card.finish(outcome="interrupted", detail="任务被中断")
         raise
     except Exception as exc:
         logger.exception("receive_response failed")
+        await progress_card.finish(outcome="error", detail="接收结果失败")
         await feishu_client.send_text(
             open_id, _format_error_for_user(exc, open_id)
         )
@@ -690,6 +850,24 @@ def _format_tool_use(block: ToolUseBlock) -> Optional[str]:
     if name.startswith("mcp__browser__"):
         return f"🌐 浏览器:{name.removeprefix('mcp__browser__')}"
     return f"🔧 {name}"
+
+
+def _tool_bucket_name(tool_name: str) -> str:
+    if tool_name in {"Read", "Write", "Edit", "Grep", "Glob"}:
+        return "文件"
+    if tool_name == "Bash":
+        return "执行"
+    if tool_name in {"WebFetch", "WebSearch"}:
+        return "网络"
+    if tool_name == "Agent":
+        return "子代理"
+    if tool_name.startswith("mcp__browser__"):
+        return "浏览器"
+    if tool_name.startswith("mcp__schedule__"):
+        return "定时任务"
+    if tool_name == "mcp__deliver__deliver_file":
+        return "交付"
+    return "其他"
 
 
 # ---------- 客户端池管理 ----------

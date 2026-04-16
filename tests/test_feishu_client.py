@@ -21,6 +21,48 @@ from feishu.client import FeishuClient
 
 
 class FeishuDownloadTests(unittest.TestCase):
+    def test_send_markdown_builds_patchable_card(self) -> None:
+        async def run_test() -> None:
+            client = FeishuClient()
+            client._create_message = AsyncMock(return_value="om_card")  # type: ignore[method-assign]
+
+            message_id = await client.send_markdown(
+                "ou_123",
+                "任务运行中",
+                title="运行状态",
+            )
+
+            self.assertEqual(message_id, "om_card")
+            _, kwargs = client._create_message.await_args
+            self.assertEqual(kwargs["msg_type"], "interactive")
+            card = json.loads(kwargs["content"])
+            self.assertTrue(card["config"]["update_multi"])
+            self.assertEqual(card["header"]["title"]["content"], "运行状态")
+            self.assertEqual(card["elements"][0]["content"], "任务运行中")
+
+        asyncio.run(run_test())
+
+    def test_update_markdown_reuses_markdown_card_payload(self) -> None:
+        async def run_test() -> None:
+            client = FeishuClient()
+            client._patch_message_content = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+            ok = await client.update_markdown(
+                "om_card",
+                "继续运行",
+                title="运行状态",
+            )
+
+            self.assertTrue(ok)
+            args = client._patch_message_content.await_args.args
+            self.assertEqual(args[0], "om_card")
+            card = json.loads(args[1])
+            self.assertTrue(card["config"]["update_multi"])
+            self.assertEqual(card["header"]["title"]["content"], "运行状态")
+            self.assertEqual(card["elements"][0]["content"], "继续运行")
+
+        asyncio.run(run_test())
+
     def test_send_browser_approval_card_builds_buttons_and_fallback_text(self) -> None:
         async def run_test() -> None:
             client = FeishuClient()
