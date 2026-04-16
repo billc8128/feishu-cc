@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 
 from config import settings
+from agent.run_context import use_task_context
 from feishu.client import feishu_client
 from scheduler import store
 
@@ -57,7 +58,8 @@ async def fire_task(task_id: str) -> None:
     try:
         if task.project != original_project:
             project_state.set_current_project(task.open_id, task.project)
-        await agent_runner.handle_user_message(task.open_id, task.prompt)
+        with use_task_context(source="scheduler", task_id=task.task_id):
+            await agent_runner.handle_user_message(task.open_id, task.prompt)
     except Exception as exc:
         logger.exception("scheduled task failed")
         await feishu_client.send_text(
