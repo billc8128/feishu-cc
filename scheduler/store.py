@@ -50,6 +50,12 @@ def _ensure_meta_schema() -> None:
                     created_at TEXT NOT NULL DEFAULT (datetime('now'))
                 );
 
+                CREATE TABLE IF NOT EXISTS schedule_browser_trust (
+                    task_id TEXT PRIMARY KEY,
+                    open_id TEXT NOT NULL,
+                    approved_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+
                 CREATE TABLE IF NOT EXISTS schedule_runs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     task_id TEXT NOT NULL,
@@ -135,12 +141,56 @@ def list_tasks(open_id: str) -> List[ScheduledTask]:
 
 def delete_task(task_id: str, open_id: str) -> bool:
     """删除任务(同时检查所有权,防止越权)。"""
+    deleted = False
     with _conn() as c:
         cur = c.execute(
             "DELETE FROM schedule_tasks WHERE task_id = ? AND open_id = ?",
             (task_id, open_id),
         )
-        return cur.rowcount > 0
+        deleted = cur.rowcount > 0
+    if deleted:
+        delete_browser_trust(task_id, open_id)
+    return deleted
+
+
+def is_browser_trusted(task_id: str, open_id: str) -> bool:
+    with _conn() as c:
+        row = c.execute(
+            "SELECT 1 FROM schedule_browser_trust WHERE task_id = ? AND open_id = ?",
+            (task_id, open_id),
+        ).fetchone()
+    return row is not None
+
+
+def approve_browser_trust(task_id: str, open_id: str) -> None:
+    with _conn() as c:
+        c.execute(
+            """
+            INSERT INTO schedule_browser_trust(task_id, open_id)
+            VALUES (?, ?)
+            ON CONFLICT(task_id) DO UPDATE SET
+                open_id = excluded.open_id,
+                approved_at = datetime('now')
+            """,
+            (task_id, open_id),
+        )
+
+
+def revoke_browser_trust(task_id: str, open_id: str) -> bool:
+    with _conn() as c:
+        cur = c.execute(
+            "DELETE FROM schedule_browser_trust WHERE task_id = ? AND open_id = ?",
+            (task_id, open_id),
+        )
+    return cur.rowcount > 0
+
+
+def delete_browser_trust(task_id: str, open_id: str) -> None:
+    with _conn() as c:
+        c.execute(
+            "DELETE FROM schedule_browser_trust WHERE task_id = ? AND open_id = ?",
+            (task_id, open_id),
+        )
 
 
 def record_run(task_id: str, open_id: str) -> None:
