@@ -7,6 +7,8 @@ import types
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from fastapi.testclient import TestClient
+
 os.environ.setdefault("ANTHROPIC_AUTH_TOKEN", "test-token")
 os.environ.setdefault("FEISHU_APP_ID", "test-app-id")
 os.environ.setdefault("FEISHU_APP_SECRET", "test-app-secret")
@@ -110,6 +112,31 @@ class BrowserCommandTests(unittest.TestCase):
             self.assertEqual(response["toast"]["content"], "✅ 已允许 agent 使用浏览器。")
 
         asyncio.run(run_test())
+
+    def test_feishu_webhook_accepts_legacy_card_action_callback(self) -> None:
+        browser_approval.start_request("ou_user", reason="登录", timeout_seconds=60)
+        original_token = settings.feishu_verification_token
+        settings.feishu_verification_token = "verification-token"
+        client = TestClient(app_module.app)
+        try:
+            response = client.post(
+                "/feishu/webhook",
+                json={
+                    "open_id": "ou_user",
+                    "open_message_id": "om_card_legacy",
+                    "token": "verification-token",
+                    "action": {
+                        "tag": "button",
+                        "value": {"kind": "browser_approval", "decision": "yes"},
+                    },
+                },
+            )
+        finally:
+            settings.feishu_verification_token = original_token
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(browser_approval.get_request_status("ou_user"), "approved")
+        self.assertEqual(response.json()["toast"]["content"], "✅ 已允许 agent 使用浏览器。")
 
     def test_browser_no_denies_pending_request(self) -> None:
         async def run_test() -> None:

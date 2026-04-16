@@ -11,6 +11,7 @@ os.environ.setdefault("BROWSER_SERVICE_TOKEN", "browser-token")
 from config import settings
 from feishu.events import (
     ParsedMessageEvent,
+    extract_verification_token,
     is_allowed,
     parse_card_action_event,
     parse_message_event,
@@ -134,6 +135,37 @@ class ParseMessageEventTests(unittest.TestCase):
         self.assertEqual(parsed.open_message_id, "om_123")
         self.assertEqual(parsed.action_value["kind"], "browser_approval")
         self.assertEqual(parsed.action_value["decision"], "yes")
+
+    def test_parses_legacy_browser_approval_card_action_payload(self) -> None:
+        body = {
+            "open_id": "ou_legacy",
+            "open_message_id": "om_legacy",
+            "token": "verification-token",
+            "action": {
+                "tag": "button",
+                "value": {"kind": "browser_approval", "decision": "no"},
+            },
+        }
+
+        parsed = parse_card_action_event(body)
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.event_id, "")
+        self.assertEqual(parsed.operator_open_id, "ou_legacy")
+        self.assertEqual(parsed.open_message_id, "om_legacy")
+        self.assertEqual(parsed.action_tag, "button")
+        self.assertEqual(parsed.action_value["decision"], "no")
+
+    def test_extracts_verification_token_from_legacy_card_payload(self) -> None:
+        body = {
+            "open_id": "ou_legacy",
+            "token": "verification-token",
+            "action": {"tag": "button", "value": {"kind": "browser_approval", "decision": "yes"}},
+        }
+
+        token = extract_verification_token(body)
+
+        self.assertEqual(token, "verification-token")
 
     def test_allows_p2p_messages_without_static_whitelist(self) -> None:
         settings.feishu_allowed_open_ids = ""

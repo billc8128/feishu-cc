@@ -98,8 +98,8 @@ async def feishu_webhook(request: Request) -> JSONResponse:
 
     # token 校验(基础防御:确认是飞书发来的)
     if settings.feishu_verification_token:
-        header = body.get("header") or {}
-        if header.get("token") != settings.feishu_verification_token:
+        token = feishu_events.extract_verification_token(body)
+        if token != settings.feishu_verification_token:
             logger.warning("invalid verification token")
             return JSONResponse({"error": "invalid token"}, status_code=401)
 

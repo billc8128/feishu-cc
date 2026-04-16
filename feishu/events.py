@@ -85,6 +85,26 @@ def url_verification_response(body: dict) -> dict:
     return {"challenge": body.get("challenge", "")}
 
 
+def extract_verification_token(body: dict) -> str:
+    """兼容事件订阅与消息卡片回调的 token 位置。"""
+    header = body.get("header")
+    if isinstance(header, dict):
+        token = header.get("token")
+        if isinstance(token, str) and token:
+            return token
+
+    event = body.get("event")
+    if isinstance(event, dict):
+        token = event.get("token")
+        if isinstance(token, str) and token:
+            return token
+
+    token = body.get("token")
+    if isinstance(token, str):
+        return token
+    return ""
+
+
 # ---------- 事件解密 ----------
 
 def decrypt_event(raw_body: bytes) -> dict:
@@ -159,24 +179,37 @@ def parse_message_event(body: dict) -> Optional[ParsedMessageEvent]:
 def parse_card_action_event(body: dict) -> Optional[ParsedCardActionEvent]:
     """解析飞书交互卡片按钮回调。"""
     header = body.get("header") or {}
-    if header.get("event_type") not in {"p2.card.action.trigger", "card.action.trigger"}:
-        return None
+    if header.get("event_type") in {"p2.card.action.trigger", "card.action.trigger"}:
+        event = body.get("event") or {}
+        operator = event.get("operator") or {}
+        context = event.get("context") or {}
+        action = event.get("action") or {}
+        action_value = action.get("value")
+        if not isinstance(action_value, dict):
+            action_value = {}
 
-    event = body.get("event") or {}
-    operator = event.get("operator") or {}
-    context = event.get("context") or {}
-    action = event.get("action") or {}
-    action_value = action.get("value")
-    if not isinstance(action_value, dict):
-        action_value = {}
+        return ParsedCardActionEvent(
+            event_id=header.get("event_id", ""),
+            operator_open_id=operator.get("open_id", ""),
+            open_message_id=context.get("open_message_id", ""),
+            action_tag=str(action.get("tag") or ""),
+            action_value=action_value,
+        )
 
-    return ParsedCardActionEvent(
-        event_id=header.get("event_id", ""),
-        operator_open_id=operator.get("open_id", ""),
-        open_message_id=context.get("open_message_id", ""),
-        action_tag=str(action.get("tag") or ""),
-        action_value=action_value,
-    )
+    action = body.get("action")
+    if isinstance(action, dict):
+        action_value = action.get("value")
+        if not isinstance(action_value, dict):
+            action_value = {}
+        return ParsedCardActionEvent(
+            event_id=str(body.get("uuid") or ""),
+            operator_open_id=str(body.get("open_id") or ""),
+            open_message_id=str(body.get("open_message_id") or ""),
+            action_tag=str(action.get("tag") or ""),
+            action_value=action_value,
+        )
+
+    return None
 
 
 def _strip_at_bot(text: str) -> str:
