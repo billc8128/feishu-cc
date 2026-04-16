@@ -110,6 +110,7 @@ class CronCommandTests(unittest.TestCase):
     def tearDown(self) -> None:
         settings.data_dir = self._original_data_dir
         settings.feishu_admin_open_ids = self._original_admin_ids
+        auth_store._initialized = False
         scheduler_store._meta_initialized = False
         self._tmp.cleanup()
 
@@ -158,6 +159,84 @@ class CronCommandTests(unittest.TestCase):
                 send_text.await_args.args[1],
                 f"未找到任务 #{task.task_id} 的浏览器授权。",
             )
+
+        asyncio.run(run_test())
+
+    def test_cron_browser_usage_error(self) -> None:
+        async def run_test() -> None:
+            parsed = ParsedMessageEvent(
+                event_id="evt-3",
+                sender_open_id="ou_user",
+                chat_id="oc_1",
+                chat_type="p2p",
+                message_id="om_3",
+                text="/cron browser",
+                attachments=[],
+            )
+
+            with patch.object(app_module.feishu_client, "send_text", new=AsyncMock()) as send_text:
+                await app_module._dispatch(parsed)
+
+            self.assertEqual(send_text.await_args.args[1], "用法:/cron browser revoke <task_id>")
+
+        asyncio.run(run_test())
+
+    def test_cron_browser_revoke_without_task_id(self) -> None:
+        async def run_test() -> None:
+            parsed = ParsedMessageEvent(
+                event_id="evt-4",
+                sender_open_id="ou_user",
+                chat_id="oc_1",
+                chat_type="p2p",
+                message_id="om_4",
+                text="/cron browser revoke",
+                attachments=[],
+            )
+
+            with patch.object(app_module.feishu_client, "send_text", new=AsyncMock()) as send_text:
+                await app_module._dispatch(parsed)
+
+            self.assertEqual(send_text.await_args.args[1], "用法:/cron browser revoke <task_id>")
+
+        asyncio.run(run_test())
+
+    def test_cron_delete_with_extra_tokens_is_rejected_and_keeps_task(self) -> None:
+        async def run_test() -> None:
+            task = scheduler_store.add_task("ou_user", "project", "0 9 * * *", "prompt", None)
+            parsed = ParsedMessageEvent(
+                event_id="evt-5",
+                sender_open_id="ou_user",
+                chat_id="oc_1",
+                chat_type="p2p",
+                message_id="om_5",
+                text=f"/cron delete {task.task_id} extra",
+                attachments=[],
+            )
+
+            with patch.object(app_module.feishu_client, "send_text", new=AsyncMock()) as send_text:
+                await app_module._dispatch(parsed)
+
+            self.assertIsNotNone(scheduler_store.get_task(task.task_id))
+            self.assertEqual(send_text.await_args.args[1], "用法:/cron delete <task_id>")
+
+        asyncio.run(run_test())
+
+    def test_cron_help_includes_browser_revoke_command(self) -> None:
+        async def run_test() -> None:
+            parsed = ParsedMessageEvent(
+                event_id="evt-6",
+                sender_open_id="ou_user",
+                chat_id="oc_1",
+                chat_type="p2p",
+                message_id="om_6",
+                text="/cron help",
+                attachments=[],
+            )
+
+            with patch.object(app_module.feishu_client, "send_text", new=AsyncMock()) as send_text:
+                await app_module._dispatch(parsed)
+
+            self.assertIn("/cron browser revoke <task_id>", send_text.await_args.args[1])
 
         asyncio.run(run_test())
 

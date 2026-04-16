@@ -244,7 +244,7 @@ async def _handle_card_action(parsed: feishu_events.ParsedCardActionEvent) -> di
 
 
 async def _handle_cron_command(open_id: str, text: str) -> None:
-    parts = text.split(maxsplit=3)
+    parts = text.split(maxsplit=2)
     sub = parts[1].lower() if len(parts) >= 2 else "list"
 
     from scheduler import store as scheduler_store
@@ -268,6 +268,9 @@ async def _handle_cron_command(open_id: str, text: str) -> None:
             await feishu_client.send_text(open_id, "用法:/cron delete <task_id>")
             return
         task_id = parts[2].strip()
+        if not task_id or len(task_id.split()) != 1:
+            await feishu_client.send_text(open_id, "用法:/cron delete <task_id>")
+            return
         ok = scheduler_store.delete_task(task_id, open_id)
         if ok:
             scheduler_store.unschedule_job(task_id)
@@ -277,11 +280,15 @@ async def _handle_cron_command(open_id: str, text: str) -> None:
         return
 
     if sub == "browser":
-        if len(parts) < 4 or parts[2].lower() != "revoke":
+        if len(parts) < 3:
             await feishu_client.send_text(open_id, "用法:/cron browser revoke <task_id>")
             return
-        task_id = parts[3].strip()
-        if not task_id:
+        browser_parts = parts[2].split(maxsplit=1)
+        if len(browser_parts) != 2 or browser_parts[0].lower() != "revoke":
+            await feishu_client.send_text(open_id, "用法:/cron browser revoke <task_id>")
+            return
+        task_id = browser_parts[1].strip()
+        if not task_id or len(task_id.split()) != 1:
             await feishu_client.send_text(open_id, "用法:/cron browser revoke <task_id>")
             return
         ok = scheduler_store.revoke_browser_trust(task_id, open_id)
