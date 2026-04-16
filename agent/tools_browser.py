@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, Dict
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
@@ -12,6 +13,8 @@ from agent.browser_client import BrowserPausedForTakeoverError, browser_client
 from config import settings
 from feishu.client import feishu_client
 from scheduler import store as scheduler_store
+
+logger = logging.getLogger(__name__)
 
 
 async def _wait_until_session_ready(open_id: str) -> Dict[str, Any]:
@@ -68,10 +71,18 @@ def build_browser_mcp(open_id: str):
         reason = (args.get("reason") or "").strip() or "需要一个真实浏览器来继续操作"
         task_context = run_context.get_current_task_context()
         is_scheduled_task = task_context.source == "scheduler" and bool(task_context.task_id)
-        is_trusted_scheduled_task = (
-            is_scheduled_task
-            and scheduler_store.is_browser_trusted(task_context.task_id, open_id)
-        )
+        is_trusted_scheduled_task = False
+        if is_scheduled_task:
+            try:
+                is_trusted_scheduled_task = scheduler_store.is_browser_trusted(
+                    task_context.task_id, open_id
+                )
+            except Exception:
+                logger.warning(
+                    "browser trust lookup failed; falling back to approval flow",
+                    exc_info=True,
+                    extra={"task_id": task_context.task_id, "open_id": open_id},
+                )
 
         try:
             existing = await browser_client.get_session(open_id)
@@ -108,8 +119,15 @@ def build_browser_mcp(open_id: str):
             if not approved:
                 return _tool_text("Browser request denied by user.", is_error=True)
 
-            if is_scheduled_task:
-                scheduler_store.approve_browser_trust(task_context.task_id, open_id)
+            if is_scheduled_task and created:
+                try:
+                    scheduler_store.approve_browser_trust(task_context.task_id, open_id)
+                except Exception:
+                    logger.warning(
+                        "browser trust persistence failed; continuing without stored trust",
+                        exc_info=True,
+                        extra={"task_id": task_context.task_id, "open_id": open_id},
+                    )
 
             try:
                 session = await browser_client.ensure_session(open_id)
