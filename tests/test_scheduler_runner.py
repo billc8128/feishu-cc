@@ -161,6 +161,44 @@ class SchedulerRunnerTests(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_fire_task_restores_context_after_exception(self) -> None:
+        async def run_test() -> None:
+            task = types.SimpleNamespace(
+                task_id="task-3",
+                open_id="ou_3",
+                project="project-c",
+                prompt="explode",
+                note=None,
+            )
+
+            async def fake_handle_user_message(open_id: str, text: str) -> None:
+                raise RuntimeError("boom")
+
+            with use_task_context(source="chat", task_id="outer-task"):
+                outer_before = get_current_task_context()
+                with patch.object(runner.store, "get_task", return_value=task), patch.object(
+                    runner.store, "runs_today_for_user", return_value=0
+                ), patch.object(runner.store, "record_run"), patch.object(
+                    runner.feishu_client, "send_text", new=AsyncMock()
+                ), patch.object(
+                    project_state, "get_current_project", return_value="project-x"
+                ), patch.object(
+                    project_state, "set_current_project", new=Mock()
+                ), patch(
+                    "agent.runner.handle_user_message",
+                    new=AsyncMock(side_effect=fake_handle_user_message),
+                ):
+                    await runner.fire_task("task-3")
+
+                outer_after = get_current_task_context()
+
+            self.assertEqual(outer_before.source, "chat")
+            self.assertEqual(outer_before.task_id, "outer-task")
+            self.assertEqual(outer_after.source, "chat")
+            self.assertEqual(outer_after.task_id, "outer-task")
+
+        asyncio.run(run_test())
+
 
 if __name__ == "__main__":
     unittest.main()
