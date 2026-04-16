@@ -244,7 +244,7 @@ async def _handle_card_action(parsed: feishu_events.ParsedCardActionEvent) -> di
 
 
 async def _handle_cron_command(open_id: str, text: str) -> None:
-    parts = text.split(maxsplit=2)
+    parts = text.split(maxsplit=3)
     sub = parts[1].lower() if len(parts) >= 2 else "list"
 
     from scheduler import store as scheduler_store
@@ -276,11 +276,27 @@ async def _handle_cron_command(open_id: str, text: str) -> None:
             await feishu_client.send_text(open_id, f"未找到任务 #{task_id}")
         return
 
+    if sub == "browser":
+        if len(parts) < 4 or parts[2].lower() != "revoke":
+            await feishu_client.send_text(open_id, "用法:/cron browser revoke <task_id>")
+            return
+        task_id = parts[3].strip()
+        if not task_id:
+            await feishu_client.send_text(open_id, "用法:/cron browser revoke <task_id>")
+            return
+        ok = scheduler_store.revoke_browser_trust(task_id, open_id)
+        if ok:
+            await feishu_client.send_text(open_id, f"🧹 已撤销定时任务 #{task_id} 的浏览器自动授权。")
+        else:
+            await feishu_client.send_text(open_id, f"未找到任务 #{task_id} 的浏览器授权。")
+        return
+
     await feishu_client.send_text(
         open_id,
         "⏰ 定时任务命令\n"
         "/cron list                 列出所有定时任务\n"
         "/cron delete <task_id>     删除某个定时任务\n"
+        "/cron browser revoke <task_id> 撤销某个定时任务的浏览器授权\n"
         "(创建定时任务请直接告诉我 — 比如『每天早上 8 点检查 GitHub 新 issue』)"
     )
 
