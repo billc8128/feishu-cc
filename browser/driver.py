@@ -73,6 +73,7 @@ class PlaywrightBrowserDriver:
             self.display,
             "-rfbport",
             str(self.vnc_port),
+            "-nomodtweak",
             "-forever",
             "-shared",
             "-localhost",
