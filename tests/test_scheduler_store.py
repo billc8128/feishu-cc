@@ -91,6 +91,17 @@ class SchedulerStoreTests(unittest.TestCase):
             self.assertTrue(store.revoke_browser_trust("task-1", "ou_owner"))
             self.assertFalse(store.is_browser_trusted("task-1", "ou_owner"))
 
+    def test_approve_does_not_transfer_trust_to_other_user(self) -> None:
+        with tempfile.TemporaryDirectory() as data_dir:
+            settings.data_dir = data_dir
+            store._meta_initialized = False
+
+            store.approve_browser_trust("task-1", "ou_owner")
+            store.approve_browser_trust("task-1", "ou_other")
+
+            self.assertTrue(store.is_browser_trusted("task-1", "ou_owner"))
+            self.assertFalse(store.is_browser_trusted("task-1", "ou_other"))
+
     def test_delete_task_removes_browser_trust(self) -> None:
         with tempfile.TemporaryDirectory() as data_dir:
             settings.data_dir = data_dir
