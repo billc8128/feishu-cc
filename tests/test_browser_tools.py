@@ -143,6 +143,37 @@ class BrowserServiceClientTests(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_client_get_active_session_uses_expected_endpoint(self) -> None:
+        async def run_test() -> None:
+            client = browser_client_module.BrowserServiceClient()
+            requests = []
+
+            async def request_handler(method, url, *, json=None, headers=None):
+                requests.append((method, url, json, headers))
+                return httpx.Response(
+                    200,
+                    json={"open_id": "ou_active", "state": "active"},
+                    request=httpx.Request(method, url, json=json, headers=headers),
+                )
+
+            with patch.object(
+                browser_client_module,
+                "httpx",
+                wraps=browser_client_module.httpx,
+            ) as httpx_module:
+                httpx_module.AsyncClient = lambda *args, **kwargs: _FakeAsyncClient(  # type: ignore[assignment]
+                    request_handler, *args, **kwargs
+                )
+                result = await client.get_active_session()
+
+            self.assertEqual(result, {"open_id": "ou_active", "state": "active"})
+            self.assertEqual(
+                [request[:2] for request in requests],
+                [("GET", "https://browser.example.com/v1/sessions/active")],
+            )
+
+        asyncio.run(run_test())
+
 
 class BrowserToolsTests(unittest.TestCase):
     def test_browser_open_tool_description_mentions_view_or_takeover_link(self) -> None:

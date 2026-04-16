@@ -120,6 +120,15 @@ class BrowserSessionManager:
                 return None
             return self._serialize(record)
 
+    async def get_active_session(self) -> Optional[Dict[str, Any]]:
+        async with self._lock:
+            if not self._active_open_id:
+                return None
+            record = self._sessions.get(self._active_open_id)
+            if not record:
+                return None
+            return self._serialize(record)
+
     async def get_session_by_viewer_token(self, viewer_token: str) -> Optional[Dict[str, Any]]:
         async with self._lock:
             record = self._active_session_for_viewer_token_locked(viewer_token)

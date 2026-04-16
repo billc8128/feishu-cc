@@ -79,6 +79,42 @@ class FeishuDownloadTests(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_get_user_display_name_returns_name_for_open_id(self) -> None:
+        async def run_test() -> None:
+            client = FeishuClient()
+            fake_response = Mock()
+            fake_response.success.return_value = True
+            fake_response.data = type(
+                "StubData",
+                (),
+                {
+                    "user": type(
+                        "StubUser",
+                        (),
+                        {"name": "朱政怡"},
+                    )()
+                },
+            )()
+            fake_api = Mock()
+            fake_api.aget = AsyncMock(return_value=fake_response)
+            client._client = type(
+                "StubClient",
+                (),
+                {
+                    "contact": type(
+                        "StubContact",
+                        (),
+                        {"v3": type("StubV3", (), {"user": fake_api})()},
+                    )()
+                },
+            )()
+
+            name = await client.get_user_display_name("ou_123")
+
+            self.assertEqual(name, "朱政怡")
+
+        asyncio.run(run_test())
+
 
 if __name__ == "__main__":
     unittest.main()

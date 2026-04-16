@@ -326,6 +326,35 @@ async def _handle_browser_command(open_id: str, text: str) -> None:
         await feishu_client.send_text(open_id, "\n".join(message))
         return
 
+    if sub == "who":
+        try:
+            session = await browser_client.get_active_session()
+        except Exception as exc:
+            await feishu_client.send_text(open_id, f"❌ 查询浏览器占用者失败:{exc}")
+            return
+        if not session:
+            await feishu_client.send_text(open_id, "ℹ️ 当前没有用户占用浏览器。")
+            return
+        owner_open_id = str(session.get("open_id") or "")
+        owner_name = None
+        if owner_open_id:
+            try:
+                owner_name = await feishu_client.get_user_display_name(owner_open_id)
+            except Exception:
+                owner_name = None
+        message = [
+            "🌐 当前浏览器占用者",
+            f"用户: {owner_name or owner_open_id or 'unknown'}",
+        ]
+        if owner_name and owner_open_id:
+            message.append(f"open_id: {owner_open_id}")
+        if session.get("state"):
+            message.append(f"状态: {session['state']}")
+        if session.get("controller"):
+            message.append(f"控制方: {session['controller']}")
+        await feishu_client.send_text(open_id, "\n".join(message))
+        return
+
     if sub == "close":
         try:
             result = await browser_client.close_session(open_id)
@@ -343,6 +372,7 @@ async def _handle_browser_command(open_id: str, text: str) -> None:
         "🌐 浏览器命令\n"
         "/browser yes       允许 agent 使用浏览器\n"
         "/browser no        拒绝本次浏览器请求\n"
+        "/browser who       查看当前是谁在占用浏览器\n"
         "/browser status    查看当前浏览器会话状态\n"
         "/browser close     关闭当前浏览器会话",
     )

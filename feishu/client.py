@@ -23,6 +23,7 @@ from lark_oapi.api.im.v1 import (
     PatchMessageRequest,
     PatchMessageRequestBody,
 )
+from lark_oapi.api.contact.v3 import GetUserRequest
 
 from config import settings
 
@@ -153,6 +154,29 @@ class FeishuClient:
             msg_type="interactive",
             content=json.dumps(card, ensure_ascii=False),
         )
+
+    async def get_user_display_name(self, open_id: str) -> Optional[str]:
+        """按 open_id 查询飞书用户展示名。失败时返回 None。"""
+        req = (
+            GetUserRequest.builder()
+            .user_id(open_id)
+            .user_id_type("open_id")
+            .department_id_type("open_department_id")
+            .build()
+        )
+        resp = await self.client.contact.v3.user.aget(req)
+        if not resp.success():
+            logger.warning(
+                "get_user_display_name failed: open_id=%s code=%s msg=%s",
+                open_id,
+                getattr(resp, "code", None),
+                getattr(resp, "msg", None),
+            )
+            return None
+        data = getattr(resp, "data", None)
+        user = getattr(data, "user", None) if data else None
+        name = getattr(user, "name", None) if user else None
+        return str(name).strip() or None
 
     # ---------- 文件 / 图片 ----------
 

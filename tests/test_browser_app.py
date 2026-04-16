@@ -39,6 +39,9 @@ class _FakeManager:
             return dict(self._session)
         return None
 
+    async def get_active_session(self):
+        return dict(self._session)
+
     async def get_session_by_viewer_token(self, viewer_token: str):
         self.viewer_lookup_token = viewer_token
         if viewer_token == self._session["viewer_token"]:
@@ -139,6 +142,13 @@ class BrowserAppTests(unittest.TestCase):
         self.assertIn('id="takeover-button" type="button"', response.text)
         self.assertIn('id="resume-button" type="button" disabled', response.text)
         self.assertEqual(browser_app.manager.viewer_lookup_token, "viewer-ou_test")
+
+    def test_get_active_session_returns_current_active_record(self) -> None:
+        response = self.client.get("/v1/sessions/active", headers=self.headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["open_id"], "ou_test")
+        self.assertEqual(response.json()["state"], "active")
 
     def test_view_starts_interactive_when_session_is_human_controlled(self) -> None:
         browser_app.manager._session["controller"] = "human"

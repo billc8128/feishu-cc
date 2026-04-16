@@ -122,6 +122,14 @@ async def ensure_session(payload: EnsureSessionRequest, request: Request) -> dic
     return await manager.ensure_session(payload.open_id, public_base_url=_public_base_url(request))
 
 
+@app.get("/v1/sessions/active", dependencies=[Depends(_require_auth)])
+async def get_active_session() -> dict:
+    session = await manager.get_active_session()
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    return session
+
+
 @app.get("/v1/sessions/{open_id}", dependencies=[Depends(_require_auth)])
 async def get_session(open_id: str) -> dict:
     session = await manager.get_session(open_id)

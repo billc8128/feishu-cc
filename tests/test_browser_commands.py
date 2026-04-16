@@ -235,6 +235,34 @@ class BrowserCommandTests(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_browser_who_reports_active_browser_owner_name(self) -> None:
+        async def run_test() -> None:
+            parsed = ParsedMessageEvent(
+                event_id="evt-6",
+                sender_open_id="ou_user",
+                chat_id="oc_1",
+                chat_type="p2p",
+                message_id="om_6",
+                text="/browser who",
+                attachments=[],
+            )
+
+            with patch.object(app_module.feishu_client, "send_text", new=AsyncMock()) as send_text, patch(
+                "agent.browser_client.browser_client.get_active_session",
+                new=AsyncMock(return_value={"open_id": "ou_active", "state": "active", "controller": "agent"}),
+            ), patch.object(
+                app_module.feishu_client,
+                "get_user_display_name",
+                new=AsyncMock(return_value="朱政怡"),
+            ):
+                await app_module._dispatch(parsed)
+
+            message = send_text.await_args.args[1]
+            self.assertIn("朱政怡", message)
+            self.assertIn("ou_active", message)
+
+        asyncio.run(run_test())
+
 
 if __name__ == "__main__":
     unittest.main()

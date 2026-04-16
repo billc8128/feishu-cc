@@ -105,6 +105,9 @@ class BrowserServiceClient:
     async def get_session(self, open_id: str) -> Optional[Dict[str, Any]]:
         return await self._request("GET", f"/v1/sessions/{open_id}", allow_404=True)
 
+    async def get_active_session(self) -> Optional[Dict[str, Any]]:
+        return await self._request("GET", "/v1/sessions/active", allow_404=True)
+
     async def close_session(self, open_id: str) -> Optional[Dict[str, Any]]:
         return await self._session_post(open_id, "close", allow_404=True)
 
