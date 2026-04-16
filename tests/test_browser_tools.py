@@ -77,6 +77,9 @@ def _install_apscheduler_stub() -> None:
 
 _install_sdk_stub()
 _install_apscheduler_stub()
+settings = importlib.import_module("config").settings
+settings.browser_service_base_url = "https://browser.example.com"
+settings.browser_service_token = "browser-token"
 browser_client_module = importlib.import_module("agent.browser_client")
 browser_tools = importlib.import_module("agent.tools_browser")
 

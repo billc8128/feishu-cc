@@ -87,6 +87,7 @@ _install_test_stubs()
 from agent.run_context import get_current_task_context, use_task_context
 
 runner = importlib.import_module("scheduler.runner")
+agent_runner = importlib.import_module("agent.runner")
 project_state = importlib.import_module("project.state")
 
 
@@ -109,8 +110,9 @@ class SchedulerRunnerTests(unittest.TestCase):
                 runner.store, "runs_today_for_user", return_value=0
             ), patch.object(runner.store, "record_run"), patch.object(
                 runner.feishu_client, "send_text", new=AsyncMock()
-            ), patch(
-                "agent.runner.handle_user_message",
+            ), patch.object(
+                agent_runner,
+                "handle_user_message",
                 new=AsyncMock(side_effect=fake_handle_user_message),
             ):
                 await runner.fire_task("task-1")
@@ -146,8 +148,9 @@ class SchedulerRunnerTests(unittest.TestCase):
                     project_state, "get_current_project", return_value="project-x"
                 ), patch.object(
                     project_state, "set_current_project", new=Mock()
-                ), patch(
-                    "agent.runner.handle_user_message",
+                ), patch.object(
+                    agent_runner,
+                    "handle_user_message",
                     new=AsyncMock(side_effect=fake_handle_user_message),
                 ):
                     await runner.fire_task("task-2")
@@ -184,8 +187,9 @@ class SchedulerRunnerTests(unittest.TestCase):
                     project_state, "get_current_project", return_value="project-x"
                 ), patch.object(
                     project_state, "set_current_project", new=Mock()
-                ), patch(
-                    "agent.runner.handle_user_message",
+                ), patch.object(
+                    agent_runner,
+                    "handle_user_message",
                     new=AsyncMock(side_effect=fake_handle_user_message),
                 ):
                     await runner.fire_task("task-3")
