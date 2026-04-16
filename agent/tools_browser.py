@@ -7,9 +7,11 @@ from typing import Any, Dict
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from agent import browser_approval
+from agent import run_context
 from agent.browser_client import BrowserPausedForTakeoverError, browser_client
 from config import settings
 from feishu.client import feishu_client
+from scheduler import store as scheduler_store
 
 
 async def _wait_until_session_ready(open_id: str) -> Dict[str, Any]:
@@ -64,6 +66,12 @@ def build_browser_mcp(open_id: str):
     )
     async def browser_open(args: Dict[str, Any]) -> Dict[str, Any]:
         reason = (args.get("reason") or "").strip() or "需要一个真实浏览器来继续操作"
+        task_context = run_context.get_current_task_context()
+        is_scheduled_task = task_context.source == "scheduler" and bool(task_context.task_id)
+        is_trusted_scheduled_task = (
+            is_scheduled_task
+            and scheduler_store.is_browser_trusted(task_context.task_id, open_id)
+        )
 
         try:
             existing = await browser_client.get_session(open_id)
@@ -71,6 +79,11 @@ def build_browser_mcp(open_id: str):
             return _tool_text(f"Browser service unavailable: {exc}", is_error=True)
         if existing and existing.get("state") in {"queued", "starting", "ready", "active"}:
             session = existing
+        elif is_trusted_scheduled_task:
+            try:
+                session = await browser_client.ensure_session(open_id)
+            except Exception as exc:
+                return _tool_text(f"Browser service unavailable: {exc}", is_error=True)
         else:
             _, created = browser_approval.start_request(
                 open_id,
@@ -78,9 +91,12 @@ def build_browser_mcp(open_id: str):
                 timeout_seconds=settings.browser_approval_timeout_seconds,
             )
             if created:
+                card_kwargs: Dict[str, Any] = {"reason": reason}
+                if is_scheduled_task:
+                    card_kwargs["trust_note"] = "允许后，此定时任务后续将自动使用浏览器，不再重复询问。"
                 card_message_id = await feishu_client.send_browser_approval_card(
                     open_id,
-                    reason=reason,
+                    **card_kwargs,
                 )
                 if not card_message_id:
                     await feishu_client.send_text(open_id, _approval_fallback_text(reason))
@@ -91,6 +107,9 @@ def build_browser_mcp(open_id: str):
 
             if not approved:
                 return _tool_text("Browser request denied by user.", is_error=True)
+
+            if is_scheduled_task:
+                scheduler_store.approve_browser_trust(task_context.task_id, open_id)
 
             try:
                 session = await browser_client.ensure_session(open_id)

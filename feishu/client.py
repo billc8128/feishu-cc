@@ -112,12 +112,18 @@ class FeishuClient:
         open_id: str,
         *,
         reason: str,
+        trust_note: Optional[str] = None,
     ) -> Optional[str]:
         """发送浏览器授权卡片,按钮确认,文本命令兜底。"""
         reason = reason.strip() or "需要一个真实浏览器来继续操作"
+        trust_note = (trust_note or "").strip()
         md = (
             "🌐 **当前任务需要使用浏览器**\n"
             f"原因: {reason}\n\n"
+        )
+        if trust_note:
+            md += f"{trust_note}\n\n"
+        md += (
             "点击下面按钮授权。\n"
             "如果卡片按钮失效,也可以回复 `/browser yes` 或 `/browser no`。"
         )

@@ -40,7 +40,43 @@ def _install_sdk_stub() -> None:
     sys.modules["claude_agent_sdk"] = fake_sdk
 
 
+def _install_apscheduler_stub() -> None:
+    fake_apscheduler = types.ModuleType("apscheduler")
+    fake_jobstores = types.ModuleType("apscheduler.jobstores")
+    fake_sqlalchemy = types.ModuleType("apscheduler.jobstores.sqlalchemy")
+    fake_schedulers = types.ModuleType("apscheduler.schedulers")
+    fake_asyncio = types.ModuleType("apscheduler.schedulers.asyncio")
+    fake_triggers = types.ModuleType("apscheduler.triggers")
+    fake_cron = types.ModuleType("apscheduler.triggers.cron")
+
+    class _SQLAlchemyJobStore:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+    class _AsyncIOScheduler:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+    class _CronTrigger:
+        @classmethod
+        def from_crontab(cls, expr: str):
+            return expr
+
+    fake_sqlalchemy.SQLAlchemyJobStore = _SQLAlchemyJobStore
+    fake_asyncio.AsyncIOScheduler = _AsyncIOScheduler
+    fake_cron.CronTrigger = _CronTrigger
+
+    sys.modules["apscheduler"] = fake_apscheduler
+    sys.modules["apscheduler.jobstores"] = fake_jobstores
+    sys.modules["apscheduler.jobstores.sqlalchemy"] = fake_sqlalchemy
+    sys.modules["apscheduler.schedulers"] = fake_schedulers
+    sys.modules["apscheduler.schedulers.asyncio"] = fake_asyncio
+    sys.modules["apscheduler.triggers"] = fake_triggers
+    sys.modules["apscheduler.triggers.cron"] = fake_cron
+
+
 _install_sdk_stub()
+_install_apscheduler_stub()
 browser_client_module = importlib.import_module("agent.browser_client")
 browser_tools = importlib.import_module("agent.tools_browser")
 
@@ -244,6 +280,99 @@ class BrowserToolsTests(unittest.TestCase):
 
             self.assertTrue(result["is_error"])
             self.assertIn("denied", result["content"][0]["text"].lower())
+
+        asyncio.run(run_test())
+
+    def test_scheduled_browser_open_skips_approval_when_task_is_trusted(self) -> None:
+        async def run_test() -> None:
+            server = browser_tools.build_browser_mcp("ou_123")
+            browser_open = server["tools"]["browser_open"]
+            scheduled_context = types.SimpleNamespace(source="scheduler", task_id="task-123")
+
+            with patch(
+                "agent.tools_browser.browser_client.get_session",
+                new=AsyncMock(return_value=None),
+            ), patch(
+                "agent.tools_browser.run_context.get_current_task_context",
+                return_value=scheduled_context,
+            ), patch(
+                "agent.tools_browser.scheduler_store.is_browser_trusted",
+                return_value=True,
+            ) as is_trusted, patch(
+                "agent.tools_browser.browser_client.ensure_session",
+                new=AsyncMock(return_value={"state": "ready", "viewer_url": "https://viewer/session-1"}),
+            ) as ensure_session, patch(
+                "agent.tools_browser.browser_approval.start_request",
+                return_value=(object(), True),
+            ) as start_request, patch(
+                "agent.tools_browser.browser_approval.wait_for_decision",
+                new=AsyncMock(return_value=True),
+            ) as wait_for_decision, patch.object(
+                browser_tools.feishu_client,
+                "send_browser_approval_card",
+                new=AsyncMock(return_value="om_card"),
+            ) as send_card, patch.object(
+                browser_tools.feishu_client,
+                "send_text",
+                new=AsyncMock(),
+            ):
+                result = await browser_open({"reason": "需要登录 Reddit"})
+
+            self.assertFalse(result.get("is_error", False))
+            self.assertIn("https://viewer/session-1", result["content"][0]["text"])
+            is_trusted.assert_called_once_with("task-123", "ou_123")
+            ensure_session.assert_awaited_once_with("ou_123")
+            start_request.assert_not_called()
+            wait_for_decision.assert_not_awaited()
+            send_card.assert_not_awaited()
+
+        asyncio.run(run_test())
+
+    def test_scheduled_browser_open_persists_trust_after_first_approval(self) -> None:
+        async def run_test() -> None:
+            server = browser_tools.build_browser_mcp("ou_123")
+            browser_open = server["tools"]["browser_open"]
+            scheduled_context = types.SimpleNamespace(source="scheduler", task_id="task-123")
+
+            with patch(
+                "agent.tools_browser.browser_client.get_session",
+                new=AsyncMock(return_value=None),
+            ), patch(
+                "agent.tools_browser.run_context.get_current_task_context",
+                return_value=scheduled_context,
+            ), patch(
+                "agent.tools_browser.scheduler_store.is_browser_trusted",
+                return_value=False,
+            ) as is_trusted, patch(
+                "agent.tools_browser.scheduler_store.approve_browser_trust",
+            ) as approve_trust, patch(
+                "agent.tools_browser.browser_client.ensure_session",
+                new=AsyncMock(return_value={"state": "ready", "viewer_url": "https://viewer/session-1"}),
+            ), patch(
+                "agent.tools_browser.browser_approval.start_request",
+                return_value=(object(), True),
+            ), patch(
+                "agent.tools_browser.browser_approval.wait_for_decision",
+                new=AsyncMock(return_value=True),
+            ), patch.object(
+                browser_tools.feishu_client,
+                "send_browser_approval_card",
+                new=AsyncMock(return_value="om_card"),
+            ) as send_card, patch.object(
+                browser_tools.feishu_client,
+                "send_text",
+                new=AsyncMock(),
+            ):
+                result = await browser_open({"reason": "需要登录 Reddit"})
+
+            self.assertFalse(result.get("is_error", False))
+            is_trusted.assert_called_once_with("task-123", "ou_123")
+            approve_trust.assert_called_once_with("task-123", "ou_123")
+            send_card.assert_awaited_once_with(
+                "ou_123",
+                reason="需要登录 Reddit",
+                trust_note="允许后，此定时任务后续将自动使用浏览器，不再重复询问。",
+            )
 
         asyncio.run(run_test())
 

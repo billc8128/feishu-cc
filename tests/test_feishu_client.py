@@ -46,6 +46,24 @@ class FeishuDownloadTests(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_send_browser_approval_card_includes_scheduled_trust_note_when_provided(self) -> None:
+        async def run_test() -> None:
+            client = FeishuClient()
+            client._create_message = AsyncMock(return_value="om_card")  # type: ignore[method-assign]
+
+            await client.send_browser_approval_card(
+                "ou_123",
+                reason="需要登录 Reddit",
+                trust_note="允许后，此定时任务后续将自动使用浏览器，不再重复询问。",
+            )
+
+            _, kwargs = client._create_message.await_args
+            card = json.loads(kwargs["content"])
+            self.assertIn("允许后，此定时任务后续将自动使用浏览器，不再重复询问。", card["elements"][0]["content"])
+            self.assertIn("需要登录 Reddit", card["elements"][0]["content"])
+
+        asyncio.run(run_test())
+
     def test_download_message_resource_writes_bytes(self) -> None:
         async def run_test() -> None:
             client = FeishuClient()
