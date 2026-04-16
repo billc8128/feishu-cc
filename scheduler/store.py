@@ -141,16 +141,18 @@ def list_tasks(open_id: str) -> List[ScheduledTask]:
 
 def delete_task(task_id: str, open_id: str) -> bool:
     """删除任务(同时检查所有权,防止越权)。"""
-    deleted = False
     with _conn() as c:
         cur = c.execute(
             "DELETE FROM schedule_tasks WHERE task_id = ? AND open_id = ?",
             (task_id, open_id),
         )
         deleted = cur.rowcount > 0
-    if deleted:
-        delete_browser_trust(task_id, open_id)
-    return deleted
+        if deleted:
+            c.execute(
+                "DELETE FROM schedule_browser_trust WHERE task_id = ?",
+                (task_id,),
+            )
+        return deleted
 
 
 def is_browser_trusted(task_id: str, open_id: str) -> bool:
@@ -164,28 +166,18 @@ def is_browser_trusted(task_id: str, open_id: str) -> bool:
 
 def approve_browser_trust(task_id: str, open_id: str) -> None:
     with _conn() as c:
-        row = c.execute(
-            "SELECT open_id FROM schedule_browser_trust WHERE task_id = ?",
-            (task_id,),
-        ).fetchone()
-        if row is None:
-            c.execute(
-                """
-                INSERT INTO schedule_browser_trust(task_id, open_id)
-                VALUES (?, ?)
-                """,
-                (task_id, open_id),
-            )
-            return
-        if row[0] == open_id:
-            c.execute(
-                """
-                UPDATE schedule_browser_trust
-                SET approved_at = datetime('now')
-                WHERE task_id = ? AND open_id = ?
-                """,
-                (task_id, open_id),
-            )
+        c.execute(
+            """
+            INSERT INTO schedule_browser_trust(task_id, open_id)
+            SELECT task_id, open_id
+            FROM schedule_tasks
+            WHERE task_id = ? AND open_id = ?
+            ON CONFLICT(task_id) DO UPDATE SET
+                approved_at = datetime('now')
+            WHERE schedule_browser_trust.open_id = excluded.open_id
+            """,
+            (task_id, open_id),
+        )
 
 
 def revoke_browser_trust(task_id: str, open_id: str) -> bool:

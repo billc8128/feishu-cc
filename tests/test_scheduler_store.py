@@ -3,6 +3,7 @@ import os
 import sys
 import types
 import tempfile
+import sqlite3
 import unittest
 
 os.environ.setdefault("ANTHROPIC_AUTH_TOKEN", "test-token")
@@ -67,42 +68,40 @@ class SchedulerStoreTests(unittest.TestCase):
         settings.data_dir = self._original_data_dir
         store._meta_initialized = False
 
-    def test_browser_trust_round_trip(self) -> None:
+    def test_approve_browser_trust_for_owned_task(self) -> None:
         with tempfile.TemporaryDirectory() as data_dir:
             settings.data_dir = data_dir
             store._meta_initialized = False
 
-            self.assertFalse(store.is_browser_trusted("task-1", "ou_owner"))
+            task = store.add_task("ou_owner", "project", "0 9 * * *", "prompt", None)
+            self.assertFalse(store.is_browser_trusted(task.task_id, "ou_owner"))
 
-            store.approve_browser_trust("task-1", "ou_owner")
+            store.approve_browser_trust(task.task_id, "ou_owner")
 
-            self.assertTrue(store.is_browser_trusted("task-1", "ou_owner"))
+            self.assertTrue(store.is_browser_trusted(task.task_id, "ou_owner"))
+
+    def test_approve_browser_trust_rejects_other_users_task(self) -> None:
+        with tempfile.TemporaryDirectory() as data_dir:
+            settings.data_dir = data_dir
+            store._meta_initialized = False
+
+            task = store.add_task("ou_owner", "project", "0 9 * * *", "prompt", None)
+
+            store.approve_browser_trust(task.task_id, "ou_other")
+
+            self.assertFalse(store.is_browser_trusted(task.task_id, "ou_other"))
+            self.assertFalse(store.is_browser_trusted(task.task_id, "ou_owner"))
+
+    def test_approve_browser_trust_rejects_nonexistent_task(self) -> None:
+        with tempfile.TemporaryDirectory() as data_dir:
+            settings.data_dir = data_dir
+            store._meta_initialized = False
+
+            store.approve_browser_trust("missing-task", "ou_owner")
+
+            self.assertFalse(store.is_browser_trusted("missing-task", "ou_owner"))
 
     def test_revoke_is_owner_scoped(self) -> None:
-        with tempfile.TemporaryDirectory() as data_dir:
-            settings.data_dir = data_dir
-            store._meta_initialized = False
-
-            store.approve_browser_trust("task-1", "ou_owner")
-
-            self.assertFalse(store.revoke_browser_trust("task-1", "ou_other"))
-            self.assertTrue(store.is_browser_trusted("task-1", "ou_owner"))
-
-            self.assertTrue(store.revoke_browser_trust("task-1", "ou_owner"))
-            self.assertFalse(store.is_browser_trusted("task-1", "ou_owner"))
-
-    def test_approve_does_not_transfer_trust_to_other_user(self) -> None:
-        with tempfile.TemporaryDirectory() as data_dir:
-            settings.data_dir = data_dir
-            store._meta_initialized = False
-
-            store.approve_browser_trust("task-1", "ou_owner")
-            store.approve_browser_trust("task-1", "ou_other")
-
-            self.assertTrue(store.is_browser_trusted("task-1", "ou_owner"))
-            self.assertFalse(store.is_browser_trusted("task-1", "ou_other"))
-
-    def test_delete_task_removes_browser_trust(self) -> None:
         with tempfile.TemporaryDirectory() as data_dir:
             settings.data_dir = data_dir
             store._meta_initialized = False
@@ -110,10 +109,30 @@ class SchedulerStoreTests(unittest.TestCase):
             task = store.add_task("ou_owner", "project", "0 9 * * *", "prompt", None)
             store.approve_browser_trust(task.task_id, "ou_owner")
 
+            self.assertFalse(store.revoke_browser_trust(task.task_id, "ou_other"))
             self.assertTrue(store.is_browser_trusted(task.task_id, "ou_owner"))
 
-            self.assertTrue(store.delete_task(task.task_id, "ou_owner"))
+            self.assertTrue(store.revoke_browser_trust(task.task_id, "ou_owner"))
+            self.assertFalse(store.is_browser_trusted(task.task_id, "ou_owner"))
 
+    def test_delete_task_removes_browser_trust_even_with_bad_owner_data(self) -> None:
+        with tempfile.TemporaryDirectory() as data_dir:
+            settings.data_dir = data_dir
+            store._meta_initialized = False
+
+            task = store.add_task("ou_owner", "project", "0 9 * * *", "prompt", None)
+
+            with sqlite3.connect(settings.sqlite_path) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO schedule_browser_trust(task_id, open_id)
+                    VALUES (?, ?)
+                    """,
+                    (task.task_id, "ou_bad"),
+                )
+
+            self.assertTrue(store.delete_task(task.task_id, "ou_owner"))
+            self.assertFalse(store.is_browser_trusted(task.task_id, "ou_bad"))
             self.assertFalse(store.is_browser_trusted(task.task_id, "ou_owner"))
 
 
