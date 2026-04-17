@@ -76,7 +76,8 @@ class BrowserCommandTests(unittest.TestCase):
 
     def test_browser_yes_resolves_pending_request(self) -> None:
         async def run_test() -> None:
-            browser_approval.start_request("ou_user", reason="登录", timeout_seconds=60)
+            request, _ = browser_approval.start_request("ou_user", reason="登录", timeout_seconds=60)
+            request.card_message_id = "om_card_1"
             parsed = ParsedMessageEvent(
                 event_id="evt-1",
                 sender_open_id="ou_user",
@@ -87,50 +88,80 @@ class BrowserCommandTests(unittest.TestCase):
                 attachments=[],
             )
 
-            with patch.object(app_module.feishu_client, "send_text", new=AsyncMock()) as send_text:
+            with patch.object(app_module.feishu_client, "send_text", new=AsyncMock()) as send_text, patch.object(
+                app_module.feishu_client,
+                "update_browser_approval_card",
+                new=AsyncMock(return_value=True),
+            ) as update_card:
                 await app_module._dispatch(parsed)
 
             self.assertEqual(browser_approval.get_request_status("ou_user"), "approved")
             self.assertIn("已允许", send_text.await_args.args[1])
+            update_card.assert_awaited_once_with(
+                "om_card_1",
+                state="approved",
+                reason="登录",
+                trust_note=None,
+            )
 
         asyncio.run(run_test())
 
     def test_browser_approval_card_action_resolves_pending_request(self) -> None:
         async def run_test() -> None:
-            browser_approval.start_request("ou_user", reason="登录", timeout_seconds=60)
+            request, _ = browser_approval.start_request("ou_user", reason="登录", timeout_seconds=60)
             parsed = ParsedCardActionEvent(
                 event_id="evt-card-1",
                 operator_open_id="ou_user",
                 open_message_id="om_card_1",
                 action_tag="button",
-                action_value={"kind": "browser_approval", "decision": "yes"},
+                action_value={"kind": "browser_approval", "decision": "yes", "request_id": request.request_id},
             )
 
-            response = await app_module._handle_card_action(parsed)
+            with patch.object(
+                app_module.feishu_client,
+                "update_browser_approval_card",
+                new=AsyncMock(return_value=True),
+            ) as update_card:
+                response = await app_module._handle_card_action(parsed)
 
             self.assertEqual(browser_approval.get_request_status("ou_user"), "approved")
             self.assertEqual(response["toast"]["content"], "✅ 已允许 agent 使用浏览器。")
+            update_card.assert_awaited_once_with(
+                "om_card_1",
+                state="approved",
+                reason="登录",
+                trust_note=None,
+            )
 
         asyncio.run(run_test())
 
     def test_feishu_webhook_accepts_legacy_card_action_callback(self) -> None:
-        browser_approval.start_request("ou_user", reason="登录", timeout_seconds=60)
+        request, _ = browser_approval.start_request("ou_user", reason="登录", timeout_seconds=60)
         original_token = settings.feishu_verification_token
         settings.feishu_verification_token = "verification-token"
         client = TestClient(app_module.app)
         try:
-            response = client.post(
-                "/feishu/webhook",
-                json={
-                    "open_id": "ou_user",
-                    "open_message_id": "om_card_legacy",
-                    "token": "verification-token",
-                    "action": {
-                        "tag": "button",
-                        "value": {"kind": "browser_approval", "decision": "yes"},
+            with patch.object(
+                app_module.feishu_client,
+                "update_browser_approval_card",
+                new=AsyncMock(return_value=True),
+            ):
+                response = client.post(
+                    "/feishu/webhook",
+                    json={
+                        "open_id": "ou_user",
+                        "open_message_id": "om_card_legacy",
+                        "token": "verification-token",
+                        "action": {
+                            "tag": "button",
+                            "value": {
+                                "kind": "browser_approval",
+                                "decision": "yes",
+                                "request_id": request.request_id,
+                            },
+                        },
                     },
-                },
-            )
+                )
         finally:
             settings.feishu_verification_token = original_token
 
@@ -140,7 +171,8 @@ class BrowserCommandTests(unittest.TestCase):
 
     def test_browser_no_denies_pending_request(self) -> None:
         async def run_test() -> None:
-            browser_approval.start_request("ou_user", reason="登录", timeout_seconds=60)
+            request, _ = browser_approval.start_request("ou_user", reason="登录", timeout_seconds=60)
+            request.card_message_id = "om_card_2"
             parsed = ParsedMessageEvent(
                 event_id="evt-2",
                 sender_open_id="ou_user",
@@ -151,11 +183,54 @@ class BrowserCommandTests(unittest.TestCase):
                 attachments=[],
             )
 
-            with patch.object(app_module.feishu_client, "send_text", new=AsyncMock()) as send_text:
+            with patch.object(app_module.feishu_client, "send_text", new=AsyncMock()) as send_text, patch.object(
+                app_module.feishu_client,
+                "update_browser_approval_card",
+                new=AsyncMock(return_value=True),
+            ) as update_card:
                 await app_module._dispatch(parsed)
 
             self.assertEqual(browser_approval.get_request_status("ou_user"), "denied")
             self.assertIn("已取消", send_text.await_args.args[1])
+            update_card.assert_awaited_once_with(
+                "om_card_2",
+                state="denied",
+                reason="登录",
+                trust_note=None,
+            )
+
+        asyncio.run(run_test())
+
+    def test_browser_approval_card_action_marks_stale_card_when_request_id_mismatches(self) -> None:
+        async def run_test() -> None:
+            request, _ = browser_approval.start_request("ou_user", reason="登录", timeout_seconds=60)
+            parsed = ParsedCardActionEvent(
+                event_id="evt-card-2",
+                operator_open_id="ou_user",
+                open_message_id="om_card_old",
+                action_tag="button",
+                action_value={
+                    "kind": "browser_approval",
+                    "decision": "yes",
+                    "request_id": f"{request.request_id}-stale",
+                },
+            )
+
+            with patch.object(
+                app_module.feishu_client,
+                "update_browser_approval_card",
+                new=AsyncMock(return_value=True),
+            ) as update_card:
+                response = await app_module._handle_card_action(parsed)
+
+            self.assertEqual(browser_approval.get_request_status("ou_user"), "pending")
+            self.assertEqual(response["toast"]["content"], "ℹ️ 这张浏览器授权卡片已失效或已处理。")
+            update_card.assert_awaited_once_with(
+                "om_card_old",
+                state="stale",
+                reason=None,
+                trust_note=None,
+            )
 
         asyncio.run(run_test())
 

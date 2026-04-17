@@ -57,6 +57,34 @@ def _approval_fallback_text(reason: str) -> str:
     )
 
 
+async def _update_approval_card(
+    request: Any,
+    *,
+    state: str,
+) -> None:
+    card_message_id = getattr(request, "card_message_id", None)
+    if not card_message_id:
+        return
+    try:
+        await feishu_client.update_browser_approval_card(
+            card_message_id,
+            state=state,
+            reason=getattr(request, "reason", None),
+            trust_note=getattr(request, "trust_note", None) or None,
+        )
+    except Exception:
+        logger.warning(
+            "failed to patch browser approval card",
+            exc_info=True,
+            extra={
+                "open_id": getattr(request, "open_id", None),
+                "request_id": getattr(request, "request_id", None),
+                "card_message_id": card_message_id,
+                "state": state,
+            },
+        )
+
+
 def build_browser_mcp(open_id: str):
     @tool(
         "browser_open",
@@ -96,27 +124,35 @@ def build_browser_mcp(open_id: str):
             except Exception as exc:
                 return _tool_text(f"Browser service unavailable: {exc}", is_error=True)
         else:
-            _, created = browser_approval.start_request(
+            trust_note = ""
+            if is_scheduled_task:
+                trust_note = "允许后，此定时任务后续将自动使用浏览器，不再重复询问。"
+
+            approval_request, created = browser_approval.start_request(
                 open_id,
                 reason=reason,
                 timeout_seconds=settings.browser_approval_timeout_seconds,
+                trust_note=trust_note,
             )
             if created:
-                card_kwargs: Dict[str, Any] = {"reason": reason}
-                if is_scheduled_task:
-                    card_kwargs["trust_note"] = "允许后，此定时任务后续将自动使用浏览器，不再重复询问。"
-                card_message_id = await feishu_client.send_browser_approval_card(
-                    open_id,
-                    **card_kwargs,
-                )
+                card_kwargs: Dict[str, Any] = {
+                    "reason": reason,
+                    "request_id": approval_request.request_id,
+                }
+                if trust_note:
+                    card_kwargs["trust_note"] = trust_note
+                card_message_id = await feishu_client.send_browser_approval_card(open_id, **card_kwargs)
+                approval_request.card_message_id = card_message_id
                 if not card_message_id:
                     await feishu_client.send_text(open_id, _approval_fallback_text(reason))
             try:
                 approved = await browser_approval.wait_for_decision(open_id)
             except browser_approval.ApprovalTimeoutError:
+                await _update_approval_card(approval_request, state="expired")
                 return _tool_text("Browser request timed out waiting for user approval.", is_error=True)
 
             if not approved:
+                await _update_approval_card(approval_request, state="denied")
                 return _tool_text("Browser request denied by user.", is_error=True)
 
             if is_scheduled_task and created:

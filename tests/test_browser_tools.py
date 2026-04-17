@@ -234,7 +234,7 @@ class BrowserToolsTests(unittest.TestCase):
                 new=AsyncMock(return_value={"state": "ready", "viewer_url": "https://viewer/session-1"}),
             ), patch(
                 "agent.tools_browser.browser_approval.start_request",
-                return_value=(object(), True),
+                return_value=(types.SimpleNamespace(request_id="req-1", card_message_id=None, reason="需要登录 Reddit", trust_note=""), True),
             ), patch(
                 "agent.tools_browser.browser_approval.wait_for_decision",
                 new=AsyncMock(return_value=True),
@@ -251,7 +251,7 @@ class BrowserToolsTests(unittest.TestCase):
 
             self.assertFalse(result.get("is_error", False))
             self.assertIn("https://viewer/session-1", result["content"][0]["text"])
-            send_card.assert_awaited_once_with("ou_123", reason="需要登录 Reddit")
+            send_card.assert_awaited_once_with("ou_123", reason="需要登录 Reddit", request_id="req-1")
             self.assertIn("旁观/接管链接", send_text.await_args_list[0].args[1])
 
         asyncio.run(run_test())
@@ -266,7 +266,7 @@ class BrowserToolsTests(unittest.TestCase):
                 new=AsyncMock(return_value=None),
             ), patch(
                 "agent.tools_browser.browser_approval.start_request",
-                return_value=(object(), True),
+                return_value=(types.SimpleNamespace(request_id="req-1", card_message_id=None, reason="需要登录 Reddit", trust_note=""), True),
             ), patch(
                 "agent.tools_browser.browser_approval.wait_for_decision",
                 new=AsyncMock(return_value=False),
@@ -276,6 +276,10 @@ class BrowserToolsTests(unittest.TestCase):
                 new=AsyncMock(return_value="om_card"),
             ), patch.object(
                 browser_tools.feishu_client,
+                "update_browser_approval_card",
+                new=AsyncMock(return_value=True),
+            ), patch.object(
+                browser_tools.feishu_client,
                 "send_text",
                 new=AsyncMock(),
             ):
@@ -283,6 +287,52 @@ class BrowserToolsTests(unittest.TestCase):
 
             self.assertTrue(result["is_error"])
             self.assertIn("denied", result["content"][0]["text"].lower())
+
+        asyncio.run(run_test())
+
+    def test_browser_open_marks_card_expired_when_approval_times_out(self) -> None:
+        async def run_test() -> None:
+            server = browser_tools.build_browser_mcp("ou_123")
+            browser_open = server["tools"]["browser_open"]
+            request = types.SimpleNamespace(
+                request_id="req-timeout",
+                card_message_id=None,
+                reason="需要登录 Reddit",
+                trust_note="",
+            )
+
+            with patch(
+                "agent.tools_browser.browser_client.get_session",
+                new=AsyncMock(return_value=None),
+            ), patch(
+                "agent.tools_browser.browser_approval.start_request",
+                return_value=(request, True),
+            ), patch(
+                "agent.tools_browser.browser_approval.wait_for_decision",
+                new=AsyncMock(side_effect=browser_tools.browser_approval.ApprovalTimeoutError("timed out")),
+            ), patch.object(
+                browser_tools.feishu_client,
+                "send_browser_approval_card",
+                new=AsyncMock(return_value="om_card_timeout"),
+            ), patch.object(
+                browser_tools.feishu_client,
+                "update_browser_approval_card",
+                new=AsyncMock(return_value=True),
+            ) as update_card, patch.object(
+                browser_tools.feishu_client,
+                "send_text",
+                new=AsyncMock(),
+            ):
+                result = await browser_open({"reason": "需要登录 Reddit"})
+
+            self.assertTrue(result["is_error"])
+            self.assertIn("timed out", result["content"][0]["text"].lower())
+            update_card.assert_awaited_once_with(
+                "om_card_timeout",
+                state="expired",
+                reason="需要登录 Reddit",
+                trust_note=None,
+            )
 
         asyncio.run(run_test())
 
@@ -353,7 +403,7 @@ class BrowserToolsTests(unittest.TestCase):
                 new=AsyncMock(return_value={"state": "ready", "viewer_url": "https://viewer/session-1"}),
             ), patch(
                 "agent.tools_browser.browser_approval.start_request",
-                return_value=(object(), True),
+                return_value=(types.SimpleNamespace(request_id="req-1", card_message_id=None, reason="需要登录 Reddit", trust_note="允许后，此定时任务后续将自动使用浏览器，不再重复询问。"), True),
             ), patch(
                 "agent.tools_browser.browser_approval.wait_for_decision",
                 new=AsyncMock(return_value=True),
@@ -374,6 +424,7 @@ class BrowserToolsTests(unittest.TestCase):
             send_card.assert_awaited_once_with(
                 "ou_123",
                 reason="需要登录 Reddit",
+                request_id="req-1",
                 trust_note="允许后，此定时任务后续将自动使用浏览器，不再重复询问。",
             )
 
@@ -401,7 +452,7 @@ class BrowserToolsTests(unittest.TestCase):
                 new=AsyncMock(return_value={"state": "ready", "viewer_url": "https://viewer/session-1"}),
             ), patch(
                 "agent.tools_browser.browser_approval.start_request",
-                return_value=(object(), False),
+                return_value=(types.SimpleNamespace(request_id="req-1", card_message_id="om_existing", reason="需要登录 Reddit", trust_note="允许后，此定时任务后续将自动使用浏览器，不再重复询问。"), False),
             ), patch(
                 "agent.tools_browser.browser_approval.wait_for_decision",
                 new=AsyncMock(return_value=True),
@@ -442,7 +493,7 @@ class BrowserToolsTests(unittest.TestCase):
                 new=AsyncMock(return_value={"state": "ready", "viewer_url": "https://viewer/session-1"}),
             ) as ensure_session, patch(
                 "agent.tools_browser.browser_approval.start_request",
-                return_value=(object(), True),
+                return_value=(types.SimpleNamespace(request_id="req-1", card_message_id=None, reason="需要登录 Reddit", trust_note=""), True),
             ) as start_request, patch(
                 "agent.tools_browser.browser_approval.wait_for_decision",
                 new=AsyncMock(return_value=True),
@@ -461,7 +512,7 @@ class BrowserToolsTests(unittest.TestCase):
             is_trusted.assert_not_called()
             start_request.assert_called_once()
             ensure_session.assert_awaited_once_with("ou_123")
-            send_card.assert_awaited_once_with("ou_123", reason="需要登录 Reddit")
+            send_card.assert_awaited_once_with("ou_123", reason="需要登录 Reddit", request_id="req-1")
 
         asyncio.run(run_test())
 
@@ -485,7 +536,7 @@ class BrowserToolsTests(unittest.TestCase):
                 new=AsyncMock(return_value={"state": "ready", "viewer_url": "https://viewer/session-1"}),
             ) as ensure_session, patch(
                 "agent.tools_browser.browser_approval.start_request",
-                return_value=(object(), True),
+                return_value=(types.SimpleNamespace(request_id="req-1", card_message_id=None, reason="需要登录 Reddit", trust_note="允许后，此定时任务后续将自动使用浏览器，不再重复询问。"), True),
             ) as start_request, patch(
                 "agent.tools_browser.browser_approval.wait_for_decision",
                 new=AsyncMock(return_value=True),
@@ -507,6 +558,7 @@ class BrowserToolsTests(unittest.TestCase):
             send_card.assert_awaited_once_with(
                 "ou_123",
                 reason="需要登录 Reddit",
+                request_id="req-1",
                 trust_note="允许后，此定时任务后续将自动使用浏览器，不再重复询问。",
             )
 
@@ -535,7 +587,7 @@ class BrowserToolsTests(unittest.TestCase):
                 new=AsyncMock(return_value={"state": "ready", "viewer_url": "https://viewer/session-1"}),
             ) as ensure_session, patch(
                 "agent.tools_browser.browser_approval.start_request",
-                return_value=(object(), True),
+                return_value=(types.SimpleNamespace(request_id="req-1", card_message_id=None, reason="需要登录 Reddit", trust_note="允许后，此定时任务后续将自动使用浏览器，不再重复询问。"), True),
             ), patch(
                 "agent.tools_browser.browser_approval.wait_for_decision",
                 new=AsyncMock(return_value=True),

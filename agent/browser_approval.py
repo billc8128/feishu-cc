@@ -9,6 +9,7 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple
+from uuid import uuid4
 
 
 class ApprovalTimeoutError(TimeoutError):
@@ -17,10 +18,13 @@ class ApprovalTimeoutError(TimeoutError):
 
 @dataclass
 class ApprovalRequest:
+    request_id: str
     open_id: str
     reason: str
     created_at: float
     expires_at: float
+    card_message_id: Optional[str] = None
+    trust_note: str = ""
     decision: Optional[bool] = None
     event: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -53,6 +57,7 @@ def start_request(
     *,
     reason: str,
     timeout_seconds: int,
+    trust_note: str = "",
 ) -> Tuple[ApprovalRequest, bool]:
     _cleanup_expired()
     existing = _requests.get(open_id)
@@ -60,23 +65,36 @@ def start_request(
         return existing, False
 
     request = ApprovalRequest(
+        request_id=uuid4().hex,
         open_id=open_id,
         reason=reason,
         created_at=time.monotonic(),
         expires_at=time.monotonic() + timeout_seconds,
+        trust_note=trust_note.strip(),
     )
     _requests[open_id] = request
     return request, True
 
 
-def resolve_request(open_id: str, *, approved: bool) -> bool:
+def resolve_request(
+    open_id: str,
+    *,
+    approved: bool,
+    request_id: Optional[str] = None,
+) -> bool:
     _cleanup_expired()
     request = _requests.get(open_id)
     if not request or request.decision is not None or _is_expired(request):
         return False
+    if request_id and request.request_id != request_id:
+        return False
     request.decision = approved
     request.event.set()
     return True
+
+
+def get_request(open_id: str) -> Optional[ApprovalRequest]:
+    return _requests.get(open_id)
 
 
 def get_request_status(open_id: str) -> str:

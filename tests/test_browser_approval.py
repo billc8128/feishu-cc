@@ -28,6 +28,7 @@ class BrowserApprovalTests(unittest.TestCase):
         self.assertTrue(created)
         self.assertEqual(request.open_id, "ou_123")
         self.assertEqual(request.reason, "需要登录 Reddit")
+        self.assertTrue(request.request_id)
         self.assertEqual(browser_approval.get_request_status("ou_123"), "pending")
 
     def test_resolve_request_marks_approved(self) -> None:
@@ -66,6 +67,18 @@ class BrowserApprovalTests(unittest.TestCase):
             self.assertEqual(browser_approval.get_request_status("ou_123"), "expired")
 
         asyncio.run(run_test())
+
+    def test_resolve_request_rejects_stale_request_id(self) -> None:
+        request, _ = browser_approval.start_request("ou_123", reason="登录", timeout_seconds=30)
+
+        resolved = browser_approval.resolve_request(
+            "ou_123",
+            approved=True,
+            request_id=f"{request.request_id}-stale",
+        )
+
+        self.assertFalse(resolved)
+        self.assertEqual(browser_approval.get_request_status("ou_123"), "pending")
 
 
 if __name__ == "__main__":

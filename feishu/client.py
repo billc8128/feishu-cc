@@ -108,54 +108,49 @@ class FeishuClient:
         open_id: str,
         *,
         reason: str,
+        request_id: str,
         trust_note: Optional[str] = None,
     ) -> Optional[str]:
         """发送浏览器授权卡片,按钮确认,文本命令兜底。"""
-        reason = reason.strip() or "需要一个真实浏览器来继续操作"
-        trust_note = (trust_note or "").strip()
-        md = (
-            "🌐 **当前任务需要使用浏览器**\n"
-            f"原因: {reason}\n\n"
+        card = self._browser_approval_card_content(
+            state="pending",
+            reason=reason,
+            request_id=request_id,
+            trust_note=trust_note,
         )
-        if trust_note:
-            md += f"{trust_note}\n\n"
-        md += (
-            "点击下面按钮授权。\n"
-            "如果卡片按钮失效,也可以回复 `/browser yes` 或 `/browser no`。"
-        )
-        card = {
-            "config": {"wide_screen_mode": True},
-            "header": {
-                "title": {"tag": "plain_text", "content": "浏览器授权"},
-                "template": "blue",
-            },
-            "elements": [
-                {"tag": "markdown", "content": md},
-                {
-                    "tag": "action",
-                    "actions": [
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "允许"},
-                            "type": "primary",
-                            "value": {"kind": "browser_approval", "decision": "yes"},
-                        },
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "拒绝"},
-                            "type": "default",
-                            "value": {"kind": "browser_approval", "decision": "no"},
-                        },
-                    ],
-                },
-            ],
-        }
         return await self._create_message(
             receive_id_type="open_id",
             receive_id=open_id,
             msg_type="interactive",
-            content=json.dumps(card, ensure_ascii=False),
+            content=card,
         )
+
+    async def update_browser_approval_card(
+        self,
+        message_id: str,
+        *,
+        state: str,
+        reason: Optional[str] = None,
+        trust_note: Optional[str] = None,
+    ) -> bool:
+        """更新浏览器授权卡片为终态,避免旧卡片继续误导点击。"""
+        try:
+            return await self._patch_message_content(
+                message_id,
+                self._browser_approval_card_content(
+                    state=state,
+                    reason=reason,
+                    trust_note=trust_note,
+                ),
+            )
+        except Exception:
+            logger.warning(
+                "update_browser_approval_card failed: message_id=%s state=%s",
+                message_id,
+                state,
+                exc_info=True,
+            )
+            return False
 
     async def get_user_display_name(self, open_id: str) -> Optional[str]:
         """按 open_id 查询飞书用户展示名。失败时返回 None。"""
@@ -345,6 +340,87 @@ class FeishuClient:
                 "title": {"tag": "plain_text", "content": title},
                 "template": "blue",
             }
+        return json.dumps(card, ensure_ascii=False)
+
+    def _browser_approval_card_content(
+        self,
+        *,
+        state: str,
+        reason: Optional[str] = None,
+        request_id: Optional[str] = None,
+        trust_note: Optional[str] = None,
+    ) -> str:
+        normalized_reason = (reason or "").strip() or "需要一个真实浏览器来继续操作"
+        normalized_note = (trust_note or "").strip()
+
+        content_lines = []
+        if state == "approved":
+            content_lines.append("✅ **已允许 agent 使用浏览器**")
+        elif state == "denied":
+            content_lines.append("🛑 **已取消本次浏览器请求**")
+        elif state == "expired":
+            content_lines.append("⌛ **浏览器授权已过期**")
+        elif state == "stale":
+            content_lines.append("ℹ️ **这张浏览器授权卡片已失效或已处理**")
+        else:
+            content_lines.append("🌐 **当前任务需要使用浏览器**")
+        content_lines.append(f"原因: {normalized_reason}")
+
+        if normalized_note:
+            content_lines.append("")
+            content_lines.append(normalized_note)
+
+        if state == "pending":
+            content_lines.extend(
+                [
+                    "",
+                    "点击下面按钮授权。",
+                    "如果卡片按钮失效,也可以回复 `/browser yes` 或 `/browser no`。",
+                ]
+            )
+        elif state == "expired":
+            content_lines.extend(["", "这次请求已经超时,请重新发起任务。"])
+        elif state == "stale":
+            content_lines.extend(["", "请使用最新的一张授权卡片,或重新发起任务。"])
+
+        elements = [{"tag": "markdown", "content": "\n".join(content_lines)}]
+        if state == "pending":
+            elements.append(
+                {
+                    "tag": "action",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "允许"},
+                            "type": "primary",
+                            "value": {
+                                "kind": "browser_approval",
+                                "decision": "yes",
+                                "request_id": request_id or "",
+                            },
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "拒绝"},
+                            "type": "default",
+                            "value": {
+                                "kind": "browser_approval",
+                                "decision": "no",
+                                "request_id": request_id or "",
+                            },
+                        },
+                    ],
+                }
+            )
+
+        card = {
+            "config": {"wide_screen_mode": True, "update_multi": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": "浏览器授权"},
+                "template": "blue",
+            },
+            "elements": elements,
+        }
         return json.dumps(card, ensure_ascii=False)
 
     async def _patch_message_content(self, message_id: str, content: str) -> bool:

@@ -71,6 +71,7 @@ class FeishuDownloadTests(unittest.TestCase):
             message_id = await client.send_browser_approval_card(
                 "ou_123",
                 reason="需要登录 Reddit",
+                request_id="req-123",
             )
 
             self.assertEqual(message_id, "om_card")
@@ -84,7 +85,9 @@ class FeishuDownloadTests(unittest.TestCase):
             actions = card["elements"][1]["actions"]
             self.assertEqual(actions[0]["value"]["kind"], "browser_approval")
             self.assertEqual(actions[0]["value"]["decision"], "yes")
+            self.assertEqual(actions[0]["value"]["request_id"], "req-123")
             self.assertEqual(actions[1]["value"]["decision"], "no")
+            self.assertEqual(actions[1]["value"]["request_id"], "req-123")
 
         asyncio.run(run_test())
 
@@ -96,6 +99,7 @@ class FeishuDownloadTests(unittest.TestCase):
             await client.send_browser_approval_card(
                 "ou_123",
                 reason="需要登录 Reddit",
+                request_id="req-123",
                 trust_note="允许后，此定时任务后续将自动使用浏览器，不再重复询问。",
             )
 
@@ -103,6 +107,26 @@ class FeishuDownloadTests(unittest.TestCase):
             card = json.loads(kwargs["content"])
             self.assertIn("允许后，此定时任务后续将自动使用浏览器，不再重复询问。", card["elements"][0]["content"])
             self.assertIn("需要登录 Reddit", card["elements"][0]["content"])
+
+        asyncio.run(run_test())
+
+    def test_update_browser_approval_card_marks_request_expired(self) -> None:
+        async def run_test() -> None:
+            client = FeishuClient()
+            client._patch_message_content = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+            ok = await client.update_browser_approval_card(
+                "om_card",
+                state="expired",
+                reason="需要登录 Reddit",
+            )
+
+            self.assertTrue(ok)
+            args = client._patch_message_content.await_args.args
+            self.assertEqual(args[0], "om_card")
+            card = json.loads(args[1])
+            self.assertIn("浏览器授权已过期", card["elements"][0]["content"])
+            self.assertEqual(len(card["elements"]), 1)
 
         asyncio.run(run_test())
 

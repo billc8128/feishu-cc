@@ -228,17 +228,56 @@ async def _handle_card_action(parsed: feishu_events.ParsedCardActionEvent) -> di
         return {"toast": {"type": "info", "content": "ℹ️ 未处理的卡片动作。"}}
 
     decision = str(value.get("decision") or "").strip().lower()
+    request_id = str(value.get("request_id") or "").strip() or None
     if decision == "yes":
-        ok = browser_approval.resolve_request(parsed.operator_open_id, approved=True)
+        ok = browser_approval.resolve_request(
+            parsed.operator_open_id,
+            approved=True,
+            request_id=request_id,
+        )
         if ok:
+            request = browser_approval.get_request(parsed.operator_open_id)
+            if parsed.open_message_id:
+                await feishu_client.update_browser_approval_card(
+                    parsed.open_message_id,
+                    state="approved",
+                    reason=getattr(request, "reason", None),
+                    trust_note=getattr(request, "trust_note", None) or None,
+                )
             return {"toast": {"type": "success", "content": "✅ 已允许 agent 使用浏览器。"}}
-        return {"toast": {"type": "info", "content": "ℹ️ 当前没有待确认的浏览器请求。"}}
+        if parsed.open_message_id:
+            await feishu_client.update_browser_approval_card(
+                parsed.open_message_id,
+                state="stale",
+                reason=None,
+                trust_note=None,
+            )
+        return {"toast": {"type": "info", "content": "ℹ️ 这张浏览器授权卡片已失效或已处理。"}}
 
     if decision == "no":
-        ok = browser_approval.resolve_request(parsed.operator_open_id, approved=False)
+        ok = browser_approval.resolve_request(
+            parsed.operator_open_id,
+            approved=False,
+            request_id=request_id,
+        )
         if ok:
+            request = browser_approval.get_request(parsed.operator_open_id)
+            if parsed.open_message_id:
+                await feishu_client.update_browser_approval_card(
+                    parsed.open_message_id,
+                    state="denied",
+                    reason=getattr(request, "reason", None),
+                    trust_note=getattr(request, "trust_note", None) or None,
+                )
             return {"toast": {"type": "warning", "content": "🛑 已取消本次浏览器请求。"}}
-        return {"toast": {"type": "info", "content": "ℹ️ 当前没有待确认的浏览器请求。"}}
+        if parsed.open_message_id:
+            await feishu_client.update_browser_approval_card(
+                parsed.open_message_id,
+                state="stale",
+                reason=None,
+                trust_note=None,
+            )
+        return {"toast": {"type": "info", "content": "ℹ️ 这张浏览器授权卡片已失效或已处理。"}}
 
     return {"toast": {"type": "error", "content": "❌ 无效的浏览器审批动作。"}}
 
@@ -315,6 +354,14 @@ async def _handle_browser_command(open_id: str, text: str) -> None:
     if sub == "yes":
         ok = browser_approval.resolve_request(open_id, approved=True)
         if ok:
+            request = browser_approval.get_request(open_id)
+            if request and getattr(request, "card_message_id", None):
+                await feishu_client.update_browser_approval_card(
+                    request.card_message_id,
+                    state="approved",
+                    reason=getattr(request, "reason", None),
+                    trust_note=getattr(request, "trust_note", None) or None,
+                )
             await feishu_client.send_text(open_id, "✅ 已允许 agent 使用浏览器。")
         else:
             await feishu_client.send_text(open_id, "ℹ️ 当前没有待确认的浏览器请求。")
@@ -323,6 +370,14 @@ async def _handle_browser_command(open_id: str, text: str) -> None:
     if sub == "no":
         ok = browser_approval.resolve_request(open_id, approved=False)
         if ok:
+            request = browser_approval.get_request(open_id)
+            if request and getattr(request, "card_message_id", None):
+                await feishu_client.update_browser_approval_card(
+                    request.card_message_id,
+                    state="denied",
+                    reason=getattr(request, "reason", None),
+                    trust_note=getattr(request, "trust_note", None) or None,
+                )
             await feishu_client.send_text(open_id, "🛑 已取消本次浏览器请求。")
         else:
             await feishu_client.send_text(open_id, "ℹ️ 当前没有待确认的浏览器请求。")
