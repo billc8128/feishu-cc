@@ -1,13 +1,13 @@
 # 飞书 Claude Code 机器人
 
-把 Claude Code 的 agent 能力接到飞书,后端用智谱 GLM-5.1。
+把 Claude Code 的 agent 能力接到飞书,后端用 Moonshot Kimi K2.5。
 你在飞书里像跟人聊天一样跟它对话,它会读文件、改代码、跑命令、上网搜索、做定时任务。
 
 ## 这是什么
 
 - **入口**:飞书企业自建应用机器人(私聊)
 - **大脑**:Claude Agent SDK(等同于 Claude Code 的核心引擎)
-- **模型**:智谱 GLM-5.1(通过 Anthropic 兼容端点)
+- **模型**:Moonshot Kimi K2.5(通过官方 Anthropic 兼容端点)
 - **能力**:Read/Write/Edit/Bash/Glob/Grep/WebFetch/WebSearch/Agent/TodoWrite + 自定义定时任务工具
 - **部署**:Railway(容器持久运行,带 Volume 持久化)
 
@@ -23,20 +23,20 @@
 2. **Railway 账号**(你已经有了)
 3. **GitHub 账号**(用来托管这份代码,Railway 从 GitHub 拉)
 4. **飞书企业管理员权限**(创建自建应用要)
-5. **智谱开放平台账号**(获取 GLM API key)
+5. **Moonshot 平台账号**(获取 Kimi API key)
 6. **20 分钟时间**
 
 ---
 
-## 第一步:获取智谱 GLM API Key
+## 第一步:获取 Moonshot Kimi API Key
 
-1. 打开 https://open.bigmodel.cn,注册并完成实名
+1. 打开 https://platform.moonshot.ai,注册并完成实名
 2. 进入控制台 → API Keys → 创建新密钥
-3. 复制保存(只显示一次),格式类似 `xxxxxxxxxxxxxxx.xxxxxxxxxxxx`
-4. **充值一点余额**(GLM 是按 token 收费的,自用一个月几块到几十块)
-5. 顺便看一眼"模型 → GLM-5.1"页面,确认这个模型对你的账号开放
+3. 复制保存(只显示一次),格式类似 `sk-xxxxxxxxxxxxxxxxxx`
+4. **充值一点余额**(Kimi 是按 token 收费的,自用一个月几块到几十块)
+5. 顺便看一眼"模型"页面,确认 `kimi-k2.5` 对你的账号开放
 
-> 💡 如果未来 GLM 改了型号名,只需要在 Railway 后台改 `ANTHROPIC_DEFAULT_OPUS_MODEL` 这个环境变量,代码不用动。
+> 💡 如果未来 Kimi 改了型号名,只需要在 Railway 后台改 `ANTHROPIC_DEFAULT_OPUS_MODEL` 这个环境变量,代码不用动。
 
 ---
 
@@ -157,13 +157,14 @@ BROWSER_SERVICE_TOKEN=和 browser service 保持一致
 在服务的 "Variables" 标签 → "Raw Editor" → 粘贴下面内容(把所有 `your_xxx` 替换成你的真实值):
 
 ```env
-ANTHROPIC_AUTH_TOKEN=你的智谱_api_key
-ANTHROPIC_BASE_URL=https://open.bigmodel.cn/api/anthropic
-ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5.1
-ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5-turbo
-ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-4.5-air
-GLM_VISION_MODEL=glm-5v-turbo
-GLM_VISION_BASE_URL=https://api.z.ai/api/paas/v4/chat/completions
+ANTHROPIC_AUTH_TOKEN=你的_moonshot_api_key
+ANTHROPIC_BASE_URL=https://api.moonshot.ai/anthropic
+ANTHROPIC_DEFAULT_OPUS_MODEL=kimi-k2.5
+ANTHROPIC_DEFAULT_SONNET_MODEL=kimi-k2.5
+ANTHROPIC_DEFAULT_HAIKU_MODEL=kimi-k2.5
+# 视觉:变量名保留 GLM_VISION_* 是历史原因,值走 Moonshot 即可
+GLM_VISION_MODEL=kimi-k2.5
+GLM_VISION_BASE_URL=https://api.moonshot.ai/v1/chat/completions
 API_TIMEOUT_MS=3000000
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 
@@ -284,9 +285,9 @@ Volume 在你删除 Railway 服务前不会丢。
 
 两块成本:
 1. **Railway 容器运行**:按 CPU/RAM/网络计费,自用每月大概 $3-8
-2. **GLM API**:按 token 计费,长聊天月十几到几十块人民币
+2. **Kimi API**:按 token 计费,长聊天月十几到几十块人民币
 
-GLM API 比 Anthropic 便宜十倍以上,真正的大头其实是 Railway 的容器时间。
+Kimi API 相比 Anthropic 官方便宜很多,真正的大头其实是 Railway 的容器时间。
 
 ### 我想加同事用
 
