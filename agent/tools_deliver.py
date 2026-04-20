@@ -16,6 +16,7 @@ from typing import Any, Dict
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from config import settings
+from feishu._sandbox import is_inside as _is_inside  # noqa: F401  (保留旧引用)
 from feishu.client import FeishuClient, feishu_client
 
 logger = logging.getLogger(__name__)
@@ -24,15 +25,6 @@ logger = logging.getLogger(__name__)
 def _user_sandbox_root(open_id: str) -> Path:
     """用户所有项目的公共根(sandbox/users/<open_id>)。"""
     return (settings.sandbox_path / "users" / open_id).resolve()
-
-
-def _is_inside(child: Path, parent: Path) -> bool:
-    """child 是否是 parent 的子路径(都已 resolve)。"""
-    try:
-        child.relative_to(parent)
-        return True
-    except ValueError:
-        return False
 
 
 def build_deliver_mcp(open_id: str):

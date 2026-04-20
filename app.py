@@ -14,8 +14,8 @@ import asyncio
 import logging
 
 from auth import store as auth_store
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from agent import browser_approval
 from agent.browser_client import browser_client
@@ -81,6 +81,55 @@ async def health() -> dict:
 
 
 # ---------- 飞书 webhook ----------
+
+@app.get("/feishu/oauth/callback")
+async def feishu_oauth_callback(code: str = "", state: str = "") -> Response:
+    """飞书 OAuth 回调:校验 state → 用 code 换 token → 落库 → 纯文本页面返回。
+
+    IM 确认是 best-effort,失败不影响 200。
+    """
+    from feishu import oauth
+
+    if not code or not state:
+        return PlainTextResponse(
+            "授权链接已失效,请回飞书重新发送 /auth-docs",
+            status_code=400,
+        )
+
+    try:
+        open_id = oauth.consume_state(state)
+    except oauth.OAuthStateInvalid:
+        return PlainTextResponse(
+            "授权链接已失效,请回飞书重新发送 /auth-docs",
+            status_code=400,
+        )
+
+    try:
+        await oauth.complete_authorization(code, open_id)
+    except oauth.OAuthExchangeFailed as exc:
+        logger.warning("oauth exchange failed for ...%s: %s", open_id[-6:], exc)
+        return PlainTextResponse(
+            "授权遇到问题,请重试或联系管理员",
+            status_code=502,
+        )
+    except Exception:
+        logger.exception("oauth callback unexpected error for ...%s", open_id[-6:])
+        return PlainTextResponse(
+            "授权遇到问题,请重试或联系管理员",
+            status_code=502,
+        )
+
+    # IM 确认:失败只记 warning,不阻塞 200
+    try:
+        await feishu_client.send_text(
+            open_id,
+            "✅ 授权成功,现在可以让我帮你写飞书文档了。",
+        )
+    except Exception:
+        logger.warning("oauth post-success IM notify failed for ...%s", open_id[-6:])
+
+    return PlainTextResponse("授权成功,回到飞书继续聊天就行")
+
 
 @app.post("/feishu/webhook")
 async def feishu_webhook(request: Request) -> JSONResponse:
@@ -171,6 +220,10 @@ async def _dispatch(parsed: feishu_events.ParsedMessageEvent) -> None:
 
         if text.startswith("/browser"):
             await _handle_browser_command(open_id, text)
+            return
+
+        if text.strip() in ("/auth-docs", "/auth_docs"):
+            await _handle_auth_docs_command(open_id)
             return
 
         # /stop 中断当前 agent 任务
@@ -454,6 +507,30 @@ async def _handle_browser_command(open_id: str, text: str) -> None:
         "/browser status    查看当前浏览器会话状态\n"
         "/browser close     关闭当前浏览器会话",
     )
+
+
+async def _handle_auth_docs_command(open_id: str) -> None:
+    """处理 /auth-docs:生成授权链接并发回。"""
+    from feishu import oauth
+
+    try:
+        url = oauth.build_authorize_url(open_id)
+    except Exception as exc:
+        logger.exception("auth-docs build url failed for %s", open_id[:12])
+        await feishu_client.send_text(
+            open_id,
+            "❌ 无法生成授权链接,请稍后再试或联系管理员。",
+        )
+        return
+
+    message = (
+        "🔐 **授权访问你的飞书文档**\n\n"
+        f"点击这个链接,在浏览器里同意授权,机器人就能帮你读写云文档了:\n\n"
+        f"{url}\n\n"
+        "⚠️ 授权有效期 30 天,过期后再发一次 /auth-docs 即可续期。\n"
+        "💡 链接 10 分钟内有效,过期请重新发送命令。"
+    )
+    await feishu_client.send_text(open_id, message)
 
 
 async def _handle_apply_command(open_id: str, access_status: str) -> None:
