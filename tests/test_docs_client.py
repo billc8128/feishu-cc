@@ -163,6 +163,32 @@ class WrapUntrustedTests(unittest.TestCase):
         self.assertIn("</untrusted-doc-content>", out)
 
 
+class AIOriginBannerTests(unittest.TestCase):
+    """新建文档首行"AI 生成"标识的渲染正确性。"""
+
+    def test_banner_renders_as_quote_block(self) -> None:
+        from agent.tools_docs import _ai_origin_banner
+        from feishu.docs_client import BT
+
+        banner = _ai_origin_banner()
+        # 放到 markdown 最前,确保被识别为 quote block
+        blocks = markdown_to_blocks(banner + "# 正文标题\n\n内容")
+        self.assertGreaterEqual(len(blocks), 3)
+        self.assertEqual(blocks[0]["block_type"], BT.QUOTE)
+
+        # quote 内容应包含 "AI 助手" 字样
+        quote_text = blocks[0]["quote"]["elements"][0]["text_run"]["content"]
+        self.assertIn("AI 助手", quote_text)
+
+    def test_banner_includes_timestamp(self) -> None:
+        from agent.tools_docs import _ai_origin_banner
+        import re
+
+        banner = _ai_origin_banner()
+        # YYYY-MM-DD HH:MM 格式时间戳必须存在
+        self.assertRegex(banner, r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}")
+
+
 class HTTPPathTests(unittest.TestCase):
     """Mock httpx 测试 _call 的重试/错误映射。"""
 

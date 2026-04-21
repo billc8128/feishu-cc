@@ -12,6 +12,7 @@ folder 缓存都绑进闭包,agent 只能看到业务参数(title/markdown/doc_i
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
@@ -38,6 +39,21 @@ def _err(msg: str) -> Dict[str, Any]:
 
 def _ok(text: str) -> Dict[str, Any]:
     return {"content": [{"type": "text", "text": text}]}
+
+
+# 北京时间,让 agent 生成的文档带一个一眼能认的起源卡片。
+_CST = timezone(timedelta(hours=8))
+
+
+def _ai_origin_banner() -> str:
+    """返回一段 markdown,作为新建文档的第一 block 插入。
+
+    格式:单行引用块,包含"AI 生成"字样 + 北京时间时间戳。
+    用 markdown blockquote 是因为飞书 docx 把它渲染成视觉明显的左侧色条,
+    与正文的普通段落一眼能分开,同时转到其他平台(Notion / GitHub)也能看。
+    """
+    now = datetime.now(_CST).strftime("%Y-%m-%d %H:%M")
+    return f"> 🤖 由 AI 助手于 {now}(北京时间)自动生成\n\n"
 
 
 # ---------- 构造器 ----------
@@ -82,10 +98,13 @@ def build_docs_mcp(open_id: str):
         if not markdown.strip():
             return _err("markdown content is empty")
 
+        # 给文档正文前加一行 AI 生成标识,与用户手写文档视觉区分。
+        markdown_with_banner = _ai_origin_banner() + markdown
+
         try:
             folder = await _folder_token()
             doc_id, url = await client.create_doc_with_markdown(
-                title=title, markdown=markdown, folder_token=folder
+                title=title, markdown=markdown_with_banner, folder_token=folder
             )
         except oauth.NotAuthorized:
             return _err(
