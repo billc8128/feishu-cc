@@ -198,11 +198,17 @@ docs_client:
 ### 4.1 Scope 清单(收窄版)
 
 ```
-docx:document drive:file wiki:wiki offline_access
+docx:document drive:drive drive:file wiki:wiki offline_access
 ```
 
+**⚠️ v2 → v3 修正(2026-04-21 实跑后)**:v2 按 reviewer 建议去掉了 `drive:drive`,实跑
+在 PR 2 部署时发现 `/drive/v1/files?folder_token=...`(列文件夹内容)返回飞书错误码
+99991679,明确要求 `drive:drive` 或 `drive:drive:readonly` 或 `space:document:retrieve`。
+**`drive:file` 只覆盖"对已知 token 的单文件操作",列文件夹必须 drive:drive**。
+这是飞书特有的权限切分,不能从 scope 字符串的名字推断。**spec v2 此处被撤回**。
+
 **对比 v1 改动**:
-- **去掉 `drive:drive`**:这是全盘访问,我们只要在指定文件夹建文件 + 列文件夹,`drive:file` 足够。
+- **恢复 `drive:drive`**(v2 曾去掉,v3 恢复):列 "AI 助手" 文件夹必须。
 - **去掉 `contact:user.base:readonly`**:授权回调 `/open-apis/authen/v1/user_info` 不需要额外 scope,飞书默认返回基础身份。
 - **保留 `wiki:wiki`**:支持用户丢 wiki 链接读取。
 - **`offline_access`**(对应中文名"持续访问已授权的数据"):触发 refresh_token 下发。

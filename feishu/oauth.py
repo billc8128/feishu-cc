@@ -35,7 +35,11 @@ logger = logging.getLogger(__name__)
 
 AUTHORIZE_URL = "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
 TOKEN_URL = "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
-SCOPES = "docx:document drive:file wiki:wiki offline_access"
+SCOPES = "docx:document drive:drive drive:file wiki:wiki offline_access"
+# 注:实跑发现飞书列文件夹接口(/drive/v1/files?folder_token=)要求 drive:drive,
+# 单独用 drive:file 会返回 99991679。spec v2 里按 reviewer 建议收窄到 drive:file
+# 是错的,本修正把 drive:drive 加回来。
+
 
 STATE_TTL_SECONDS = 600  # 授权页 10 分钟不点同意就作废
 REFRESH_PREEMPT_SECONDS = 300  # access token 剩余不足 5 分钟就提前刷新
