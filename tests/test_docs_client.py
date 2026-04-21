@@ -355,5 +355,171 @@ class DocIdResolutionTests(unittest.TestCase):
         self.assertEqual(asyncio.run(go()), "DOCX_FROM_WIKI")
 
 
+class ImageBlockParsingTests(unittest.TestCase):
+    """纯解析器层:图片占位的识别与段落隔离。"""
+
+    def test_image_on_its_own_line_is_pending(self) -> None:
+        from feishu.docs_client import _is_pending_image
+
+        blocks = markdown_to_blocks("![架构图](diagrams/arch.png)")
+        self.assertEqual(len(blocks), 1)
+        self.assertTrue(_is_pending_image(blocks[0]))
+        self.assertEqual(blocks[0]["__pending_image__"]["alt"], "架构图")
+        self.assertEqual(blocks[0]["__pending_image__"]["path"], "diagrams/arch.png")
+
+    def test_image_breaks_paragraph(self) -> None:
+        from feishu.docs_client import _is_pending_image, BT
+
+        md = "第一段\n![x](a.png)\n第二段"
+        blocks = markdown_to_blocks(md)
+        self.assertEqual(len(blocks), 3)
+        self.assertEqual(blocks[0]["block_type"], BT.TEXT)
+        self.assertTrue(_is_pending_image(blocks[1]))
+        self.assertEqual(blocks[2]["block_type"], BT.TEXT)
+
+    def test_inline_image_in_paragraph_is_plain_text(self) -> None:
+        from feishu.docs_client import BT, _is_pending_image
+
+        md = "看这个图 ![x](a.png) 挺好"
+        blocks = markdown_to_blocks(md)
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0]["block_type"], BT.TEXT)
+        self.assertFalse(_is_pending_image(blocks[0]))
+
+    def test_image_inside_fenced_code_is_not_detected(self) -> None:
+        md = "```\n![x](bomb.png)\n```"
+        blocks = markdown_to_blocks(md)
+        self.assertEqual(len(blocks), 1)
+        from feishu.docs_client import BT
+        self.assertEqual(blocks[0]["block_type"], BT.CODE)
+
+
+class ImageInsertionTests(unittest.TestCase):
+    """_insert_with_images:图片上传 + 降级的副作用行为。
+
+    用 fake httpx 拦截所有 HTTP,断言顺序和降级。
+    """
+
+    def setUp(self) -> None:
+        self._tmp = __import__("tempfile").TemporaryDirectory()
+        self.sandbox = __import__("pathlib").Path(self._tmp.name).resolve()
+        # 准备一张合法图片
+        (self.sandbox / "pic.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _make_client_with_fake_http(self, response_script: list):
+        """response_script: 每次 request 返回 (status, json) 的列表,按顺序消费。"""
+        async def tok():
+            return "t"
+        client = FeishuDocsClient(token_provider=tok)
+        seen = []
+
+        class FakeClient:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return None
+            async def request(self, method, url, **kw):
+                seen.append((method, url, kw))
+                status, body = response_script.pop(0)
+                m = MagicMock(); m.status_code = status
+                m.json = MagicMock(return_value=body)
+                return m
+            async def post(self, url, **kw):
+                seen.append(("POST", url, kw))
+                status, body = response_script.pop(0)
+                m = MagicMock(); m.status_code = status
+                m.json = MagicMock(return_value=body)
+                return m
+
+        return client, FakeClient, seen
+
+    def test_image_upload_and_replace_sequence(self) -> None:
+        """正常路径:占位 image → upload_all → replace_image 三次调用的顺序。"""
+        from feishu.docs_client import _pending_image_block
+
+        # 响应顺序:
+        # 1. text block 批量插入(普通段落 before)
+        # 2. 占位 image block 创建(返回 block_id)
+        # 3. upload_all(返回 file_token)
+        # 4. replace_image PATCH
+        # 5. text block 批量插入(普通段落 after)
+        script = [
+            (200, {"code": 0, "data": {}}),  # 1
+            (200, {"code": 0, "data": {"children": [{"block_id": "img_block_9"}]}}),  # 2
+            (200, {"code": 0, "data": {"file_token": "tok_pic"}}),  # 3
+            (200, {"code": 0, "data": {}}),  # 4
+            (200, {"code": 0, "data": {}}),  # 5
+        ]
+        client, FakeClient, seen = self._make_client_with_fake_http(script)
+
+        blocks = [
+            {"block_type": 2, "text": {"elements": [{"text_run": {"content": "before", "text_element_style": {}}}], "style": {}}},
+            _pending_image_block(alt="pic", path="pic.png"),
+            {"block_type": 2, "text": {"elements": [{"text_run": {"content": "after", "text_element_style": {}}}], "style": {}}},
+        ]
+
+        async def go():
+            with patch("feishu.docs_client.httpx.AsyncClient", return_value=FakeClient()):
+                await client._insert_with_images(
+                    doc_id="DOC", parent_id="DOC",
+                    blocks=blocks, sandbox_root=self.sandbox,
+                )
+
+        asyncio.run(go())
+        # 顺序验证
+        self.assertEqual(len(seen), 5)
+        self.assertIn("blocks/DOC/children", seen[0][1])  # before flush
+        self.assertIn("blocks/DOC/children", seen[1][1])  # image placeholder
+        self.assertIn("medias/upload_all", seen[2][1])    # upload
+        self.assertEqual(seen[3][0], "PATCH")             # replace
+        self.assertIn("blocks/DOC/children", seen[4][1])  # after flush
+
+    def test_image_outside_sandbox_falls_back_to_text(self) -> None:
+        """路径越界:不触网,插入纯文本占位。"""
+        from feishu.docs_client import _pending_image_block
+
+        # 只有一次:text block 批量插入(含降级后的 [图片: ...] 文本)
+        script = [(200, {"code": 0, "data": {}})]
+        client, FakeClient, seen = self._make_client_with_fake_http(script)
+
+        blocks = [_pending_image_block(alt="x", path="/etc/passwd")]
+
+        async def go():
+            with patch("feishu.docs_client.httpx.AsyncClient", return_value=FakeClient()):
+                await client._insert_with_images(
+                    doc_id="DOC", parent_id="DOC",
+                    blocks=blocks, sandbox_root=self.sandbox,
+                )
+
+        asyncio.run(go())
+        # 只调一次 children API,且内容是 text block 包 [图片: x]
+        self.assertEqual(len(seen), 1)
+        req_body = seen[0][2].get("json") or {}
+        children = req_body.get("children", [])
+        self.assertEqual(len(children), 1)
+        elems = children[0]["text"]["elements"]
+        content = elems[0]["text_run"]["content"]
+        self.assertIn("图片", content)
+        self.assertIn("x", content)
+
+    def test_no_sandbox_root_falls_back_to_text(self) -> None:
+        from feishu.docs_client import _pending_image_block
+
+        script = [(200, {"code": 0, "data": {}})]
+        client, FakeClient, seen = self._make_client_with_fake_http(script)
+        blocks = [_pending_image_block(alt="x", path="pic.png")]
+
+        async def go():
+            with patch("feishu.docs_client.httpx.AsyncClient", return_value=FakeClient()):
+                await client._insert_with_images(
+                    doc_id="DOC", parent_id="DOC",
+                    blocks=blocks, sandbox_root=None,
+                )
+
+        asyncio.run(go())
+        self.assertEqual(len(seen), 1)  # 就一次 text 插入,没有 upload
+
+
 if __name__ == "__main__":
     unittest.main()

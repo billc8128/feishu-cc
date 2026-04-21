@@ -16,10 +16,13 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 from urllib.parse import urlparse
 
 import httpx
+
+from feishu._sandbox import validate_sandbox_path
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +61,7 @@ class BT:
     QUOTE = 15
     TODO = 17
     DIVIDER = 22
+    IMAGE = 27
     TABLE = 31
     TABLE_CELL = 32
     QUOTE_CONTAINER = 34
@@ -79,6 +83,7 @@ DOCX_CHILDREN = "/open-apis/docx/v1/documents/{doc_id}/blocks/{block_id}/childre
 DOCX_LIST_BLOCKS = "/open-apis/docx/v1/documents/{doc_id}/blocks"
 DRIVE_LIST = "/open-apis/drive/v1/files"
 DRIVE_CREATE_FOLDER = "/open-apis/drive/v1/files/create_folder"
+DRIVE_UPLOAD_ALL = "/open-apis/drive/v1/medias/upload_all"
 WIKI_NODE = "/open-apis/wiki/v2/spaces/get_node"
 
 PAGE_SIZE_BLOCKS = 500
@@ -101,23 +106,149 @@ class FeishuDocsClient:
     # ---------- 对外业务 ----------
 
     async def create_doc_with_markdown(
-        self, title: str, markdown: str, folder_token: str
+        self,
+        title: str,
+        markdown: str,
+        folder_token: str,
+        sandbox_root: Optional["Path"] = None,
     ) -> tuple[str, str]:
-        """建新 doc,把 markdown 渲染进去。返回 (doc_id, doc_url)。"""
+        """建新 doc,把 markdown 渲染进去。返回 (doc_id, doc_url)。
+
+        sandbox_root:markdown 里若出现 ![alt](path) 图片,path 必须在 sandbox_root 内。
+                     传 None 表示不允许图片(出现则降级为纯文本)。
+        """
         doc_id = await self._create_empty(title=title, folder_token=folder_token)
-        root_id = doc_id  # 文档根节点的 block_id 等于 doc_id
         blocks = markdown_to_blocks(markdown)
         if blocks:
-            await self._batch_insert_children(doc_id=doc_id, parent_id=root_id, blocks=blocks)
+            await self._insert_with_images(
+                doc_id=doc_id, parent_id=doc_id, blocks=blocks, sandbox_root=sandbox_root
+            )
         url = f"https://feishu.cn/docx/{doc_id}"
         return doc_id, url
 
-    async def append_markdown(self, doc_id_or_url: str, markdown: str) -> None:
+    async def append_markdown(
+        self,
+        doc_id_or_url: str,
+        markdown: str,
+        sandbox_root: Optional["Path"] = None,
+    ) -> None:
         doc_id = await self._resolve_doc_id(doc_id_or_url)
         blocks = markdown_to_blocks(markdown)
         if not blocks:
             return
-        await self._batch_insert_children(doc_id=doc_id, parent_id=doc_id, blocks=blocks)
+        await self._insert_with_images(
+            doc_id=doc_id, parent_id=doc_id, blocks=blocks, sandbox_root=sandbox_root
+        )
+
+    async def _insert_with_images(
+        self,
+        doc_id: str,
+        parent_id: str,
+        blocks: list[dict],
+        sandbox_root: Optional["Path"],
+    ) -> None:
+        """把 blocks 插入 doc,途中遇到占位图片就:
+        1. 校验 sandbox → 上传 media → 拿 file_token
+        2. 插入空的 image block,拿 block_id
+        3. PATCH replace_image(block_id, token=file_token)
+
+        按原顺序依次处理,保证图片落在 markdown 原来的位置。
+        图片上传失败 / sandbox_root 为 None / 路径非法 → 降级为纯文本段落。
+        """
+        import os
+        buf: list[dict] = []
+
+        async def flush() -> None:
+            if not buf:
+                return
+            await self._batch_insert_children(doc_id=doc_id, parent_id=parent_id, blocks=list(buf))
+            buf.clear()
+
+        for block in blocks:
+            if _is_pending_image(block):
+                await flush()
+                meta = block[_PENDING_IMAGE_MARKER]
+                alt = meta.get("alt") or ""
+                raw_path = meta.get("path") or ""
+                fallback_text = f"[图片: {alt or raw_path}]"
+                # 没 sandbox root 或路径非法时降级为纯文本
+                if sandbox_root is None:
+                    logger.warning("image block skipped (no sandbox_root): %s", raw_path)
+                    buf.append(_text_block(fallback_text))
+                    continue
+                try:
+                    abs_path = validate_sandbox_path(raw_path, sandbox_root)
+                except PermissionError as exc:
+                    logger.warning("image escape sandbox, rendering as text: %s", exc)
+                    buf.append(_text_block(fallback_text))
+                    continue
+                if not abs_path.is_file():
+                    logger.warning("image file not found, rendering as text: %s", abs_path)
+                    buf.append(_text_block(fallback_text))
+                    continue
+                try:
+                    image_block_id = await self._create_image_placeholder(
+                        doc_id=doc_id, parent_id=parent_id
+                    )
+                    file_token = await self._upload_image_to_doc(
+                        local_path=abs_path, doc_id=doc_id
+                    )
+                    await self._replace_image(
+                        doc_id=doc_id, block_id=image_block_id, file_token=file_token
+                    )
+                except (DocsAPIError, PermissionDenied) as exc:
+                    logger.warning("image upload failed, appending text fallback: %s", exc)
+                    buf.append(_text_block(fallback_text))
+                continue
+            buf.append(block)
+        await flush()
+
+    async def _create_image_placeholder(self, doc_id: str, parent_id: str) -> str:
+        """插一个空 image block,返回 block_id。飞书要求先建壳再填 token。"""
+        path = DOCX_CHILDREN.format(doc_id=doc_id, block_id=parent_id)
+        body = {
+            "children": [{"block_type": BT.IMAGE, "image": {}}],
+            "index": -1,
+        }
+        data = await self._post(path, body)
+        children = (data or {}).get("children") or []
+        if not children:
+            raise DocsAPIError("create image placeholder: no children in response")
+        return children[0].get("block_id") or ""
+
+    async def _upload_image_to_doc(self, local_path: "Path", doc_id: str) -> str:
+        """上传图片,绑到 doc 上,返回 file_token。"""
+        name = local_path.name
+        size = local_path.stat().st_size
+        token = await self._token_provider()
+        url = _OPEN_BASE + DRIVE_UPLOAD_ALL
+        headers = {"Authorization": f"Bearer {token}"}
+        with open(local_path, "rb") as f:
+            files = {"file": (name, f, "application/octet-stream")}
+            data = {
+                "file_name": name,
+                "parent_type": "docx_image",
+                "parent_node": doc_id,
+                "size": str(size),
+            }
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_S) as client:
+                resp = await client.post(url, headers=headers, data=data, files=files)
+        if resp.status_code >= 400:
+            raise DocsAPIError(f"upload_all http {resp.status_code}")
+        payload = resp.json()
+        if payload.get("code") not in (0, None):
+            raise DocsAPIError(
+                f"upload_all biz err code={payload.get('code')} msg={payload.get('msg')}"
+            )
+        tok = ((payload.get("data") or {}).get("file_token")) or ""
+        if not tok:
+            raise DocsAPIError("upload_all: no file_token")
+        return tok
+
+    async def _replace_image(self, doc_id: str, block_id: str, file_token: str) -> None:
+        path = f"/open-apis/docx/v1/documents/{doc_id}/blocks/{block_id}"
+        body = {"replace_image": {"token": file_token}}
+        await self._call("PATCH", path, json=body)
 
     async def read_doc_as_markdown(self, doc_id_or_url: str) -> str:
         """读整篇 doc(带分页),blocks → markdown,包 untrusted 标签。"""
@@ -331,6 +462,8 @@ class FeishuDocsClient:
 
 _FENCE_RE = re.compile(r"^```(\S*)\s*$")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
+# 整行就是一张图片:`![alt](path)`
+_IMAGE_ONLY_RE = re.compile(r"^!\[([^\]]*)\]\(([^)]+)\)\s*$")
 _BULLET_RE = re.compile(r"^(\s*)-\s+(.*)$")
 _ORDERED_RE = re.compile(r"^(\s*)\d+\.\s+(.*)$")
 _TODO_RE = re.compile(r"^(\s*)-\s+\[( |x|X)\]\s+(.*)$")
@@ -435,7 +568,18 @@ def markdown_to_blocks(markdown: str) -> list[dict]:
             i += 1
             continue
 
-        # 10. 普通段落(合并连续非空非前缀行)
+        # 10. 单独一行的图片:![alt](path)
+        # 注:不在 inline 级别处理图片,图片是 block 级元素。
+        #   段落中混排的图片会被降级为普通文字(含 `!` 字面量)。
+        m = _IMAGE_ONLY_RE.match(line)
+        if m:
+            alt = m.group(1)
+            path = m.group(2)
+            blocks.append(_pending_image_block(alt, path))
+            i += 1
+            continue
+
+        # 11. 普通段落(合并连续非空非前缀行)
         para_lines = [line]
         j = i + 1
         while j < len(lines):
@@ -444,13 +588,35 @@ def markdown_to_blocks(markdown: str) -> list[dict]:
                 break
             if (_HEADING_RE.match(nxt) or _BULLET_RE.match(nxt) or _ORDERED_RE.match(nxt)
                     or _QUOTE_RE.match(nxt) or _DIVIDER_RE.match(nxt)
-                    or _FENCE_RE.match(nxt) or _TABLE_ROW_RE.match(nxt)):
+                    or _FENCE_RE.match(nxt) or _TABLE_ROW_RE.match(nxt)
+                    or _IMAGE_ONLY_RE.match(nxt)):
                 break
             para_lines.append(nxt)
             j += 1
         blocks.append(_text_block(" ".join(l.strip() for l in para_lines)))
         i = j
     return blocks
+
+
+# 图片占位 block —— 不是飞书合法 block_type。客户端在 create/append 里
+# 会抽出这些占位、单独走"upload media → replace_image"两步流程,而不是
+# 把它们塞进普通 children 批次。
+#
+# 为什么用占位而不是直接在解析器里上传?
+# 解析是纯同步函数,不该碰网络 / 不该拿 sandbox_root。占位让解析保持纯,
+# 网络副作用集中在客户端层。
+_PENDING_IMAGE_MARKER = "__pending_image__"
+
+
+def _pending_image_block(alt: str, path: str) -> dict:
+    return {
+        "block_type": -1,  # 非法值,客户端会 filter
+        _PENDING_IMAGE_MARKER: {"alt": alt, "path": path},
+    }
+
+
+def _is_pending_image(block: dict) -> bool:
+    return _PENDING_IMAGE_MARKER in block
 
 
 def _heading_block(level: int, content: str) -> dict:
