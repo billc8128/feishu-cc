@@ -205,7 +205,9 @@ docx:document drive:file wiki:wiki offline_access
 - **去掉 `drive:drive`**:这是全盘访问,我们只要在指定文件夹建文件 + 列文件夹,`drive:file` 足够。
 - **去掉 `contact:user.base:readonly`**:授权回调 `/open-apis/authen/v1/user_info` 不需要额外 scope,飞书默认返回基础身份。
 - **保留 `wiki:wiki`**:支持用户丢 wiki 链接读取。
-- **`offline_access`**:飞书文档确认支持,写 scope 里触发 refresh_token 下发(验证方法见 §10)。
+- **`offline_access`**(对应中文名"持续访问已授权的数据"):触发 refresh_token 下发。
+  **运行时发现**:仅写在 scope 参数里不够,必须**同时**在开发者后台"权限管理"里勾选 +
+  发布版本。否则授权页返回错误码 20027(当前应用权限不足)。
 
 ### 4.2 回调处理契约
 
@@ -504,7 +506,7 @@ prompt 末尾追加一行(运行时替换):
 
 | 假设 | 核验方法 | 结论 |
 |---|---|---|
-| `offline_access` 是飞书 OAuth scope,写进 scope 参数触发 refresh_token 下发 | WebFetch 飞书 /authen/v1/authorize 文档 | ✅ 文档明确列出 "For refresh tokens, include `offline_access`" |
+| `offline_access` 是飞书 OAuth scope,写进 scope 参数触发 refresh_token 下发 | WebFetch 飞书 /authen/v1/authorize 文档 | ✅ 文档明确列出 "For refresh tokens, include `offline_access`"。**但注意:部署后实测发现还需要同时在开发者后台"权限管理"勾选并发布版本,否则授权页返回 20027 错误** |
 | docx 图片两步流程(create empty → PATCH with file_token) | lark-oapi 1.5.3 SDK 源码 `docx/v1/model/replace_image_request.py` 存在且字段匹配 | ✅ SDK 明确支持 `replace_image` endpoint |
 | drive/v1 `upload_all` 的 `parent_type` 支持 `docx_image` | 飞书官方文档(WebFetch) | ✅ 文档明确列出 `docx_image` 等值 |
 | drive 有标题/内容搜索端点 | lark-oapi 1.5.3 SDK drive/v1 和 v2 的 resource 目录遍历 | ❌ **无独立搜索端点**,已改为"列 + 客户端过滤",见 §5.5 |
