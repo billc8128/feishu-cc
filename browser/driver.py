@@ -226,6 +226,19 @@ class PlaywrightBrowserDriver:
     def current_viewer_token(self) -> Optional[str]:
         return self._running.viewer_token if self._running else None
 
+    async def screenshot_png(self, open_id: str) -> bytes:
+        """当前页面 PNG 截图(整个 viewport)。用于失败诊断。"""
+        running = self._require_running(open_id)
+        return await running.page.screenshot(full_page=False, type="png")
+
+    def current_url(self, open_id: str) -> str:
+        if not self._running or self._running.open_id != open_id:
+            return ""
+        try:
+            return self._running.page.url or ""
+        except Exception:
+            return ""
+
     async def _connect_playwright(self):
         from playwright.async_api import async_playwright
 

@@ -46,6 +46,12 @@ class BrowserDriver(Protocol):
     async def snapshot(self, open_id: str) -> Dict[str, Any]:
         ...
 
+    async def screenshot_png(self, open_id: str) -> bytes:
+        ...
+
+    def current_url(self, open_id: str) -> str:
+        ...
+
 
 @dataclass
 class SessionRecord:
@@ -74,6 +80,8 @@ class BrowserSessionManager:
         self._data_dir = data_dir
         self._profiles_dir = data_dir / "browser-profiles"
         self._profiles_dir.mkdir(parents=True, exist_ok=True)
+        self._failures_dir = data_dir / "failures"
+        self._failures_dir.mkdir(parents=True, exist_ok=True)
         self._driver = driver
         self._idle_timeout_seconds = idle_timeout_seconds
         self._max_session_ttl_seconds = max_session_ttl_seconds
@@ -247,6 +255,42 @@ class BrowserSessionManager:
             self._require_agent_control_locked(record)
             record.last_used_at = time.monotonic()
             return await self._driver.snapshot(open_id)
+
+    async def capture_failure(self, open_id: str, *, reason: str) -> Dict[str, Any]:
+        """失败时截图 + 拿当前 URL,写到 failures_dir,返回下载 id。
+
+        故意不加锁 / 不触发 last_used_at —— 允许在 timeout 异常处理里并发调用。
+        截图本身出错就吞掉(已经在 error 路径上),返回 screenshot_id="" 代表没截到。
+        """
+        import secrets as _s
+        screenshot_id = ""
+        page_url = ""
+        try:
+            page_url = self._driver.current_url(open_id)
+        except Exception:
+            page_url = ""
+        try:
+            png = await self._driver.screenshot_png(open_id)
+            screenshot_id = f"{int(time.time())}_{_s.token_hex(6)}.png"
+            (self._failures_dir / screenshot_id).write_bytes(png)
+        except Exception:
+            # screenshot 本身出错就算了;诊断用的,不该再引发异常
+            screenshot_id = ""
+        return {
+            "reason": reason,
+            "page_url": page_url,
+            "screenshot_id": screenshot_id,
+        }
+
+    def read_failure_png(self, screenshot_id: str) -> Optional[bytes]:
+        """通过 id 读取已存的失败截图。id 格式白名单,拒绝任何带 / 或 .. 的请求。"""
+        if not screenshot_id or "/" in screenshot_id or ".." in screenshot_id:
+            return None
+        p = self._failures_dir / screenshot_id
+        try:
+            return p.read_bytes()
+        except FileNotFoundError:
+            return None
 
     async def validate_viewer_token(self, viewer_token: str) -> bool:
         async with self._lock:

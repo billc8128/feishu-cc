@@ -9,7 +9,11 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from agent import browser_approval
 from agent import run_context
-from agent.browser_client import BrowserPausedForTakeoverError, browser_client
+from agent.browser_client import (
+    BrowserActionFailedError,
+    BrowserPausedForTakeoverError,
+    browser_client,
+)
 from config import settings
 from feishu.client import feishu_client
 from scheduler import store as scheduler_store
@@ -45,7 +49,51 @@ def _takeover_pause_text() -> Dict[str, Any]:
 def _tool_error(message: str, exc: Exception) -> Dict[str, Any]:
     if isinstance(exc, BrowserPausedForTakeoverError):
         return _takeover_pause_text()
+    if isinstance(exc, BrowserActionFailedError):
+        # 包含诊断字段:agent 看到就知道是 selector / 页面问题,可以换招
+        detail = (
+            f"{message}: {exc.error_type} — {exc.reason}. "
+            f"page_url={exc.page_url or 'unknown'}. "
+            "A screenshot has been delivered to the user for diagnosis. "
+            "Consider: (1) the selector may have changed, (2) the site may be "
+            "rate-limiting or showing a captcha, (3) login state may have expired. "
+            "Do NOT blindly retry the same selector — try another approach."
+        )
+        return _tool_text(detail, is_error=True)
     return _tool_text(f"{message}: {exc}", is_error=True)
+
+
+async def _deliver_failure_screenshot(open_id: str, exc: Exception) -> None:
+    """看到 BrowserActionFailedError 就主动把截图发给用户。fire-and-forget,出错不影响主流程。"""
+    if not isinstance(exc, BrowserActionFailedError):
+        return
+    if not exc.screenshot_id:
+        return
+    try:
+        png = await browser_client.fetch_failure_screenshot(exc.screenshot_id)
+    except Exception:
+        logger.warning("fetch failure screenshot failed", exc_info=True)
+        return
+    try:
+        import os
+        import tempfile
+        with tempfile.NamedTemporaryFile(
+            prefix="browser_fail_", suffix=".png", delete=False
+        ) as tmp:
+            tmp.write(png)
+            tmp_path = tmp.name
+        image_key = await feishu_client.upload_image(tmp_path)
+        if image_key:
+            await feishu_client.send_image(open_id, image_key)
+        os.unlink(tmp_path)
+    except Exception:
+        logger.warning("deliver failure screenshot failed", exc_info=True)
+
+
+async def _tool_error_async(open_id: str, message: str, exc: Exception) -> Dict[str, Any]:
+    """同步 _tool_error 的 async 变体:先 fire-and-forget 发截图,再返回结构化错误文字。"""
+    await _deliver_failure_screenshot(open_id, exc)
+    return _tool_error(message, exc)
 
 
 def _approval_fallback_text(reason: str) -> str:
@@ -213,7 +261,7 @@ def build_browser_mcp(open_id: str):
         try:
             result = await browser_client.navigate(open_id, url)
         except Exception as exc:
-            return _tool_error("Browser navigate failed", exc)
+            return await _tool_error_async(open_id, "Browser navigate failed", exc)
         return _tool_text(f"Navigated browser to {result.get('url', url)}")
 
     @tool(
@@ -228,7 +276,7 @@ def build_browser_mcp(open_id: str):
         try:
             await browser_client.click(open_id, selector)
         except Exception as exc:
-            return _tool_error("Browser click failed", exc)
+            return await _tool_error_async(open_id, "Browser click failed", exc)
         return _tool_text(f"Clicked selector: {selector}")
 
     @tool(
@@ -245,7 +293,7 @@ def build_browser_mcp(open_id: str):
         try:
             await browser_client.type(open_id, selector, text, clear=clear)
         except Exception as exc:
-            return _tool_error("Browser type failed", exc)
+            return await _tool_error_async(open_id, "Browser type failed", exc)
         return _tool_text(f"Typed into selector: {selector}")
 
     @tool(
@@ -260,7 +308,7 @@ def build_browser_mcp(open_id: str):
         try:
             await browser_client.wait(open_id, selector=selector, text=text, timeout_ms=timeout_ms)
         except Exception as exc:
-            return _tool_error("Browser wait failed", exc)
+            return await _tool_error_async(open_id, "Browser wait failed", exc)
         return _tool_text("Browser wait completed.")
 
     @tool(
@@ -272,7 +320,7 @@ def build_browser_mcp(open_id: str):
         try:
             result = await browser_client.snapshot(open_id)
         except Exception as exc:
-            return _tool_error("Browser snapshot failed", exc)
+            return await _tool_error_async(open_id, "Browser snapshot failed", exc)
         snapshot = result.get("snapshot") or {}
         lines = [
             f"title: {snapshot.get('title', '')}",

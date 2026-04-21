@@ -5,9 +5,18 @@ import contextlib
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+try:
+    from playwright.async_api import Error as PlaywrightError
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+except ImportError:  # 本地跑测试时 playwright 可能没装,fall back 成不会匹配的占位
+    class _Unmatchable(Exception):
+        pass
+    PlaywrightError = _Unmatchable  # type: ignore[misc,assignment]
+    PlaywrightTimeoutError = _Unmatchable  # type: ignore[misc,assignment]
 
 from browser.config import settings
 from browser.driver import PlaywrightBrowserDriver
@@ -79,11 +88,39 @@ def _translate_session_runtime_error(error: RuntimeError) -> HTTPException:
     return HTTPException(status_code=409, detail=detail)
 
 
-async def _run_browser_action(action) -> dict:
+async def _run_browser_action(action, *, open_id: str = "") -> dict:
     try:
         return await action
     except RuntimeError as error:
         raise _translate_session_runtime_error(error) from error
+    except PlaywrightTimeoutError as error:
+        # selector / 导航等价的 Playwright timeout——通常是页面不符合预期,
+        # 不是基础设施问题。包成 422 + 截图让上层能诊断。
+        if not open_id:
+            raise HTTPException(status_code=422, detail={
+                "error_type": "playwright_timeout",
+                "reason": str(error),
+                "page_url": "",
+                "screenshot_id": "",
+            }) from error
+        info = await manager.capture_failure(open_id, reason=str(error))
+        raise HTTPException(status_code=422, detail={
+            "error_type": "playwright_timeout",
+            **info,
+        }) from error
+    except PlaywrightError as error:
+        if not open_id:
+            raise HTTPException(status_code=422, detail={
+                "error_type": "playwright_error",
+                "reason": str(error),
+                "page_url": "",
+                "screenshot_id": "",
+            }) from error
+        info = await manager.capture_failure(open_id, reason=str(error))
+        raise HTTPException(status_code=422, detail={
+            "error_type": "playwright_error",
+            **info,
+        }) from error
 
 
 def _public_viewer_control_payload(session: dict) -> dict:
@@ -148,18 +185,19 @@ async def close_session(open_id: str, request: Request) -> dict:
 
 @app.post("/v1/sessions/{open_id}/navigate", dependencies=[Depends(_require_auth)])
 async def navigate(open_id: str, payload: NavigateRequest) -> dict:
-    return await _run_browser_action(manager.navigate(open_id, payload.url))
+    return await _run_browser_action(manager.navigate(open_id, payload.url), open_id=open_id)
 
 
 @app.post("/v1/sessions/{open_id}/click", dependencies=[Depends(_require_auth)])
 async def click(open_id: str, payload: ClickRequest) -> dict:
-    return await _run_browser_action(manager.click(open_id, payload.selector))
+    return await _run_browser_action(manager.click(open_id, payload.selector), open_id=open_id)
 
 
 @app.post("/v1/sessions/{open_id}/type", dependencies=[Depends(_require_auth)])
 async def type_text(open_id: str, payload: TypeRequest) -> dict:
     return await _run_browser_action(
-        manager.type(open_id, payload.selector, payload.text, clear=payload.clear)
+        manager.type(open_id, payload.selector, payload.text, clear=payload.clear),
+        open_id=open_id,
     )
 
 
@@ -171,13 +209,22 @@ async def wait_for(open_id: str, payload: WaitRequest) -> dict:
             selector=payload.selector,
             text=payload.text,
             timeout_ms=payload.timeout_ms,
-        )
+        ),
+        open_id=open_id,
     )
 
 
 @app.post("/v1/sessions/{open_id}/snapshot", dependencies=[Depends(_require_auth)])
 async def snapshot(open_id: str) -> dict:
-    return await _run_browser_action(manager.snapshot(open_id))
+    return await _run_browser_action(manager.snapshot(open_id), open_id=open_id)
+
+
+@app.get("/v1/failures/{screenshot_id}", dependencies=[Depends(_require_auth)])
+async def get_failure_screenshot(screenshot_id: str) -> Response:
+    png = manager.read_failure_png(screenshot_id)
+    if png is None:
+        raise HTTPException(status_code=404, detail="screenshot not found")
+    return Response(content=png, media_type="image/png")
 
 
 @app.post("/v1/sessions/{open_id}/takeover", dependencies=[Depends(_require_auth)])
