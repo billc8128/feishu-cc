@@ -1,13 +1,13 @@
 # 飞书 Claude Code 机器人
 
-把 Claude Code 的 agent 能力接到飞书,后端用 Moonshot Kimi K2.5。
+把 Claude Code 的 agent 能力接到飞书,后端用火山方舟 Coding Plan。
 你在飞书里像跟人聊天一样跟它对话,它会读文件、改代码、跑命令、上网搜索、做定时任务。
 
 ## 这是什么
 
 - **入口**:飞书企业自建应用机器人(私聊)
 - **大脑**:Claude Agent SDK(等同于 Claude Code 的核心引擎)
-- **模型**:Moonshot Kimi K2.5(通过官方 Anthropic 兼容端点)
+- **模型**:火山方舟 Coding Plan(通过 Anthropic 兼容端点)
 - **能力**:Read/Write/Edit/Bash/Glob/Grep/WebFetch/WebSearch/Agent/TodoWrite + 自定义定时任务工具
 - **部署**:Railway(容器持久运行,带 Volume 持久化)
 
@@ -23,20 +23,20 @@
 2. **Railway 账号**(你已经有了)
 3. **GitHub 账号**(用来托管这份代码,Railway 从 GitHub 拉)
 4. **飞书企业管理员权限**(创建自建应用要)
-5. **Moonshot 平台账号**(获取 Kimi API key)
+5. **火山方舟 Coding Plan 账号**(获取 Ark API key)
 6. **20 分钟时间**
 
 ---
 
-## 第一步:获取 Moonshot Kimi API Key
+## 第一步:获取火山方舟 Coding Plan API Key
 
-1. 打开 https://platform.moonshot.ai,注册并完成实名
-2. 进入控制台 → API Keys → 创建新密钥
-3. 复制保存(只显示一次),格式类似 `sk-xxxxxxxxxxxxxxxxxx`
-4. **充值一点余额**(Kimi 是按 token 收费的,自用一个月几块到几十块)
-5. 顺便看一眼"模型"页面,确认 `kimi-k2.5` 对你的账号开放
+1. 打开火山方舟控制台,开通 Coding Plan
+2. 在 Coding Plan 的快速配置里选择或创建 API Key
+3. 复制保存 API Key,格式类似 `ark-xxxxxxxx`
+4. Base URL 使用 `https://ark.cn-beijing.volces.com/api/coding`
+5. 模型默认使用 `ark-code-latest`,由控制台按"效果 + 速度"自动调度
 
-> 💡 如果未来 Kimi 改了型号名,只需要在 Railway 后台改 `ANTHROPIC_DEFAULT_OPUS_MODEL` 这个环境变量,代码不用动。
+> 💡 如果想固定模型,可以把 `ANTHROPIC_MODEL` 改成火山控制台展示的 Model Name。
 
 ---
 
@@ -157,14 +157,15 @@ BROWSER_SERVICE_TOKEN=和 browser service 保持一致
 在服务的 "Variables" 标签 → "Raw Editor" → 粘贴下面内容(把所有 `your_xxx` 替换成你的真实值):
 
 ```env
-ANTHROPIC_AUTH_TOKEN=你的_moonshot_api_key
-ANTHROPIC_BASE_URL=https://api.moonshot.ai/anthropic
-ANTHROPIC_DEFAULT_OPUS_MODEL=kimi-k2.5
-ANTHROPIC_DEFAULT_SONNET_MODEL=kimi-k2.5
-ANTHROPIC_DEFAULT_HAIKU_MODEL=kimi-k2.5
-# 视觉:变量名保留 GLM_VISION_* 是历史原因,值走 Moonshot 即可
-GLM_VISION_MODEL=kimi-k2.5
-GLM_VISION_BASE_URL=https://api.moonshot.ai/v1/chat/completions
+ANTHROPIC_AUTH_TOKEN=你的_ark_api_key
+ANTHROPIC_BASE_URL=https://ark.cn-beijing.volces.com/api/coding
+ANTHROPIC_MODEL=ark-code-latest
+ANTHROPIC_DEFAULT_OPUS_MODEL=ark-code-latest
+ANTHROPIC_DEFAULT_SONNET_MODEL=ark-code-latest
+ANTHROPIC_DEFAULT_HAIKU_MODEL=ark-code-latest
+# 视觉:变量名保留 GLM_VISION_* 是历史原因,如需图片/视频理解请配置可用的多模态 OpenAI 兼容端点
+GLM_VISION_MODEL=glm-5v-turbo
+GLM_VISION_BASE_URL=https://api.z.ai/api/paas/v4/chat/completions
 API_TIMEOUT_MS=3000000
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 
@@ -260,7 +261,7 @@ Railway 会给你一个域名,比如 `my-feishu-cc-production.up.railway.app`。
 
 ### 机器人回得很慢
 
-正常的——GLM-5.1 在长 agent 任务下单次响应可能 30 秒到几分钟。机器人会先回一句"🤔 思考中…",然后边干活边推送进度。
+正常的——长 agent 任务下单次响应可能 30 秒到几分钟。机器人会先回一句"🤔 思考中…",然后边干活边推送进度。
 
 如果完全没动静超过 5 分钟,发 `/stop` 中断。
 
@@ -285,9 +286,9 @@ Volume 在你删除 Railway 服务前不会丢。
 
 两块成本:
 1. **Railway 容器运行**:按 CPU/RAM/网络计费,自用每月大概 $3-8
-2. **Kimi API**:按 token 计费,长聊天月十几到几十块人民币
+2. **火山方舟 Coding Plan**:按订阅套餐和调用规则计费
 
-Kimi API 相比 Anthropic 官方便宜很多,真正的大头其实是 Railway 的容器时间。
+真正的大头通常是 Railway 的容器时间和 Coding Plan 套餐用量。
 
 ### 我想加同事用
 

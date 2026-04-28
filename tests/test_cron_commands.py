@@ -72,6 +72,8 @@ def _install_test_stubs() -> None:
     fake_sdk.ThinkingBlock = _Dummy
     fake_sdk.ToolResultBlock = _Dummy
     fake_sdk.ToolUseBlock = _Dummy
+    fake_sdk.create_sdk_mcp_server = lambda *args, **kwargs: {}
+    fake_sdk.tool = lambda *args, **kwargs: (lambda fn: fn)
 
     fake_hooks = types.ModuleType("agent.hooks")
     fake_hooks.build_hooks = lambda open_id: {}

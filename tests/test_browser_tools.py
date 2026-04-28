@@ -19,6 +19,10 @@ os.environ.setdefault("DATA_DIR", "/tmp/feishu-cc-test-data")
 def _install_sdk_stub() -> None:
     fake_sdk = types.ModuleType("claude_agent_sdk")
 
+    class _Dummy:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
     def tool(name, description, schema):
         def decorator(fn):
             fn._tool_name = name
@@ -37,6 +41,15 @@ def _install_sdk_stub() -> None:
 
     fake_sdk.tool = tool
     fake_sdk.create_sdk_mcp_server = create_sdk_mcp_server
+    fake_sdk.AssistantMessage = _Dummy
+    fake_sdk.ClaudeAgentOptions = _Dummy
+    fake_sdk.ClaudeSDKClient = _Dummy
+    fake_sdk.ResultMessage = _Dummy
+    fake_sdk.SystemMessage = _Dummy
+    fake_sdk.TextBlock = _Dummy
+    fake_sdk.ThinkingBlock = _Dummy
+    fake_sdk.ToolResultBlock = _Dummy
+    fake_sdk.ToolUseBlock = _Dummy
     sys.modules["claude_agent_sdk"] = fake_sdk
 
 

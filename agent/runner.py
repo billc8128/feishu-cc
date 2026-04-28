@@ -3,7 +3,7 @@
 职责:
   1. 按 (open_id, project) 维护 ClaudeSDKClient 池,带空闲超时清理
      —— client 实例自身在内存里保留多轮对话上下文(同一 client 的连续 query)
-  2. 配置 GLM 后端(通过 env 注入到 SDK)
+  2. 配置 Anthropic 兼容后端(通过 env 注入到 SDK)
   3. 流式接收 SDK 消息,实时翻译成飞书消息发出去
   4. 提供 interrupt(open_id) 让 /stop 命令能终止当前任务
 """
@@ -48,12 +48,14 @@ from project import state as project_state
 logger = logging.getLogger(__name__)
 
 
-# ---------- 配置 GLM 环境变量(进程级) ----------
+# ---------- 配置 Anthropic 兼容后端环境变量(进程级) ----------
 
-def _inject_glm_env() -> None:
+def _inject_anthropic_env() -> None:
     """SDK 透传环境变量到底层 CLI,所以这里设进程 env 即可。"""
     os.environ["ANTHROPIC_AUTH_TOKEN"] = settings.anthropic_auth_token
     os.environ["ANTHROPIC_BASE_URL"] = settings.anthropic_base_url
+    if settings.anthropic_model:
+        os.environ["ANTHROPIC_MODEL"] = settings.anthropic_model
     os.environ["ANTHROPIC_DEFAULT_OPUS_MODEL"] = settings.anthropic_default_opus_model
     os.environ["ANTHROPIC_DEFAULT_SONNET_MODEL"] = settings.anthropic_default_sonnet_model
     os.environ["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = settings.anthropic_default_haiku_model
@@ -61,7 +63,7 @@ def _inject_glm_env() -> None:
     os.environ["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = settings.claude_code_disable_nonessential_traffic
 
 
-_inject_glm_env()
+_inject_anthropic_env()
 
 
 # ---------- 客户端池 ----------

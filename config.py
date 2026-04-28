@@ -10,12 +10,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # GLM
+    # Claude Code / Anthropic-compatible backend
     anthropic_auth_token: str
-    anthropic_base_url: str = "https://open.bigmodel.cn/api/anthropic"
-    anthropic_default_opus_model: str = "glm-5.1"
-    anthropic_default_sonnet_model: str = "glm-5-turbo"
-    anthropic_default_haiku_model: str = "glm-4.5-air"
+    anthropic_base_url: str = "https://ark.cn-beijing.volces.com/api/coding"
+    anthropic_model: str = "ark-code-latest"
+    anthropic_default_opus_model: str = "ark-code-latest"
+    anthropic_default_sonnet_model: str = "ark-code-latest"
+    anthropic_default_haiku_model: str = "ark-code-latest"
     api_timeout_ms: str = "3000000"
     claude_code_disable_nonessential_traffic: str = "1"
     glm_vision_model: str = "glm-5v-turbo"
