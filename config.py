@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     claude_code_disable_nonessential_traffic: str = "1"
     glm_vision_model: str = "glm-5v-turbo"
     glm_vision_base_url: str = "https://api.z.ai/api/paas/v4/chat/completions"
+    glm_vision_api_key: str = ""
 
     # 飞书
     feishu_app_id: str

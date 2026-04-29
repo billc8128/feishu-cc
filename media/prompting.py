@@ -29,7 +29,10 @@ def build_media_turn_prompt(
             ]
         )
         if analysis is None:
-            lines.append("- 媒体分析: 媒体分析失败，请按本地文件继续处理")
+            lines.append(
+                "- 媒体分析: 媒体分析失败；不要直接读取图片/视频作为模型输入。"
+                "请基于用户文字继续，必要时让用户补充描述或配置可用的多模态分析接口。"
+            )
         else:
             lines.extend(
                 [

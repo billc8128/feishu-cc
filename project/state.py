@@ -16,6 +16,7 @@ from config import settings
 logger = logging.getLogger(__name__)
 _lock = threading.Lock()
 _initialized = False
+SESSION_RESET_SENTINEL = "__feishu_cc_session_reset__"
 
 
 def _create_project_sessions_table(conn: sqlite3.Connection) -> None:
@@ -169,6 +170,10 @@ def get_active_session_id(open_id: str, project_name: str) -> Optional[str]:
     return row[0]
 
 
+def is_session_reset_marker(session_id: str | None) -> bool:
+    return session_id == SESSION_RESET_SENTINEL
+
+
 def set_active_session_id(open_id: str, project_name: str, session_id: str) -> None:
     with _conn() as c:
         c.execute(
@@ -181,6 +186,10 @@ def set_active_session_id(open_id: str, project_name: str, session_id: str) -> N
             """,
             (open_id, project_name, session_id),
         )
+
+
+def mark_session_reset(open_id: str, project_name: str) -> None:
+    set_active_session_id(open_id, project_name, SESSION_RESET_SENTINEL)
 
 
 def clear_active_session_id(open_id: str, project_name: str) -> None:

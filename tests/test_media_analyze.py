@@ -3,6 +3,7 @@ import base64
 import os
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("ANTHROPIC_AUTH_TOKEN", "test-token")
@@ -92,6 +93,63 @@ class MediaAnalyzeTests(unittest.TestCase):
 
         self.assertTrue(data_url.startswith("data:image/png;base64,"))
         self.assertIn(base64.b64encode(png_bytes).decode("ascii"), data_url)
+
+    def test_vision_call_prefers_dedicated_api_key_when_configured(self) -> None:
+        async def run_test() -> None:
+            class FakeResponse:
+                def raise_for_status(self) -> None:
+                    pass
+
+                def json(self) -> dict:
+                    return {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": '{"summary": "ok"}',
+                                }
+                            }
+                        ]
+                    }
+
+            class FakeAsyncClient:
+                def __init__(self, *args, **kwargs) -> None:
+                    self.headers = None
+
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, exc_type, exc, tb) -> None:
+                    pass
+
+                async def post(self, url, *, headers, json):
+                    self.headers = headers
+                    return FakeResponse()
+
+            fake_client = FakeAsyncClient()
+            fake_settings = SimpleNamespace(
+                anthropic_auth_token="coding-token",
+                glm_vision_api_key="vision-token",
+                glm_vision_model="doubao-vision",
+                glm_vision_base_url="https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+                api_timeout_ms="3000000",
+            )
+
+            with patch("media.analyze.settings", fake_settings), patch(
+                "media.analyze.httpx.AsyncClient",
+                return_value=fake_client,
+            ), patch.object(Path, "read_bytes", return_value=b"image"):
+                await MediaAnalyzer()._call_glm_vision(
+                    media_kind="image",
+                    media_items=[(Path("/tmp/demo.png"), "image/png")],
+                    user_text="分析图片",
+                )
+
+            self.assertEqual(
+                fake_client.headers["Authorization"],
+                "Bearer vision-token",
+            )
+
+        asyncio.run(run_test())
 
 
 if __name__ == "__main__":

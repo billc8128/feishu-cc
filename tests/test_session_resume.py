@@ -138,6 +138,31 @@ class SessionResumeTests(unittest.TestCase):
                     "active-session",
                 )
 
+    def test_session_reset_marker_skips_latest_transcript_fallback(self) -> None:
+        open_id = "ou_test_user"
+        project = "scratch"
+        project_root = f"/data/sandbox/users/{open_id}/{project}"
+        encoded = "-data-sandbox-users-ou_test_user-scratch"
+
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as data_dir:
+            settings.data_dir = data_dir
+            project_state._initialized = False
+
+            projects_dir = Path(home) / ".claude" / "projects" / encoded
+            projects_dir.mkdir(parents=True)
+            latest = projects_dir / "polluted-session.jsonl"
+            latest.write_text(
+                json.dumps({"cwd": project_root, "sessionId": "polluted-session"}) + "\n",
+                encoding="utf-8",
+            )
+
+            project_state.mark_session_reset(open_id, project)
+
+            with patch.dict(os.environ, {"HOME": home}, clear=False):
+                self.assertIsNone(
+                    runner._resume_session_id_for_project(open_id, project, project_root)
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

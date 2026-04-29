@@ -38,6 +38,23 @@ class MediaPromptingTests(unittest.TestCase):
         self.assertIn("/tmp/demo.png", prompt)
         self.assertIn("界面截图", prompt)
 
+    def test_failed_media_analysis_warns_agent_not_to_read_media_directly(self) -> None:
+        prompt = build_media_turn_prompt(
+            text="帮我看下这张图",
+            attachments=[
+                MediaAttachment(
+                    kind="image",
+                    original_name="broken.png",
+                    local_path=Path("/tmp/broken.png"),
+                )
+            ],
+            analyses=[None],
+        )
+
+        self.assertIn("媒体分析失败", prompt)
+        self.assertIn("不要直接读取图片/视频", prompt)
+        self.assertNotIn("请按本地文件继续处理", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

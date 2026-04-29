@@ -101,8 +101,9 @@ class MediaAnalyzer:
             "temperature": 0.1,
             "stream": False,
         }
+        api_key = settings.glm_vision_api_key or settings.anthropic_auth_token
         headers = {
-            "Authorization": f"Bearer {settings.anthropic_auth_token}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
         timeout = max(int(settings.api_timeout_ms) / 1000, 30)
