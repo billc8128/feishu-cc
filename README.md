@@ -164,10 +164,11 @@ ANTHROPIC_DEFAULT_OPUS_MODEL=ark-code-latest
 ANTHROPIC_DEFAULT_SONNET_MODEL=ark-code-latest
 ANTHROPIC_DEFAULT_HAIKU_MODEL=ark-code-latest
 # 视觉:变量名保留 GLM_VISION_* 是历史原因,如需图片/视频理解请配置可用的多模态 OpenAI 兼容端点
-# 火山方舟普通 Chat API 可用: https://ark.cn-beijing.volces.com/api/v3/chat/completions
+# 火山 Coding Plan 模型可用: https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions
+# 火山普通 Ark 模型才使用: https://ark.cn-beijing.volces.com/api/v3/chat/completions
 # GLM_VISION_API_KEY 不填时会复用 ANTHROPIC_AUTH_TOKEN
 GLM_VISION_MODEL=你开通的视觉/多模态模型名
-GLM_VISION_BASE_URL=https://ark.cn-beijing.volces.com/api/v3/chat/completions
+GLM_VISION_BASE_URL=https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions
 GLM_VISION_API_KEY=
 API_TIMEOUT_MS=3000000
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
