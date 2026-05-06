@@ -371,6 +371,56 @@ async def _handle_cron_command(open_id: str, text: str) -> None:
             await feishu_client.send_text(open_id, f"未找到任务 #{task_id}")
         return
 
+    if sub == "move":
+        if len(parts) < 3:
+            await feishu_client.send_text(open_id, "用法:/cron move <task_id> <project>")
+            return
+        move_parts = parts[2].split(maxsplit=2)
+        if len(move_parts) != 2:
+            await feishu_client.send_text(open_id, "用法:/cron move <task_id> <project>")
+            return
+        task_id, target_project = move_parts[0].strip(), move_parts[1].strip()
+        if not task_id or not target_project:
+            await feishu_client.send_text(open_id, "用法:/cron move <task_id> <project>")
+            return
+        if not project_manager.is_valid_project_name(target_project):
+            await feishu_client.send_text(
+                open_id,
+                "项目名只能包含字母数字下划线短横,且不能以符号开头。",
+            )
+            return
+
+        task = scheduler_store.get_task(task_id)
+        if not task or task.open_id != open_id:
+            await feishu_client.send_text(open_id, f"未找到任务 #{task_id}")
+            return
+
+        target_root = project_manager.get_project_root(open_id, target_project)
+        if not target_root.exists():
+            await feishu_client.send_text(
+                open_id,
+                f"项目 '{target_project}' 不存在。先用 /project new {target_project} 创建。",
+            )
+            return
+
+        if task.project == target_project:
+            await feishu_client.send_text(
+                open_id,
+                f"ℹ️ 定时任务 #{task.task_id} 已在项目 {target_project}。",
+            )
+            return
+
+        ok = scheduler_store.move_task(task.task_id, open_id, target_project)
+        if not ok:
+            await feishu_client.send_text(open_id, f"未找到任务 #{task_id}")
+            return
+        scheduler_store.schedule_job(task.task_id, task.cron_expr)
+        await feishu_client.send_text(
+            open_id,
+            f"✅ 已迁移定时任务 #{task.task_id}: {task.project} → {target_project}",
+        )
+        return
+
     if sub == "browser":
         if len(parts) < 3:
             await feishu_client.send_text(open_id, "用法:/cron browser revoke <task_id>")
@@ -395,6 +445,7 @@ async def _handle_cron_command(open_id: str, text: str) -> None:
         "⏰ 定时任务命令\n"
         "/cron list                 列出所有定时任务\n"
         "/cron delete <task_id>     删除某个定时任务\n"
+        "/cron move <task_id> <project> 迁移任务到另一个项目\n"
         "/cron browser revoke <task_id> 撤销某个定时任务的浏览器授权\n"
         "(创建定时任务请直接告诉我 — 比如『每天早上 8 点检查 GitHub 新 issue』)"
     )

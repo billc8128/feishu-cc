@@ -49,6 +49,10 @@ def list_projects(open_id: str) -> List[str]:
     return sorted([p.name for p in user_root.iterdir() if p.is_dir()])
 
 
+def is_valid_project_name(name: str) -> bool:
+    return bool(_VALID_NAME.match(name))
+
+
 # ---------- 命令处理 ----------
 
 def is_project_command(text: str) -> bool:

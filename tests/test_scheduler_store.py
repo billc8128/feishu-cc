@@ -115,6 +115,24 @@ class SchedulerStoreTests(unittest.TestCase):
             self.assertTrue(store.revoke_browser_trust(task.task_id, "ou_owner"))
             self.assertFalse(store.is_browser_trusted(task.task_id, "ou_owner"))
 
+    def test_move_task_updates_only_owned_task_project(self) -> None:
+        with tempfile.TemporaryDirectory() as data_dir:
+            settings.data_dir = data_dir
+            store._meta_initialized = False
+
+            task = store.add_task("ou_owner", "scratch", "0 9 * * *", "prompt", "note")
+
+            self.assertFalse(store.move_task(task.task_id, "ou_other", "0506"))
+            self.assertEqual(store.get_task(task.task_id).project, "scratch")
+
+            self.assertTrue(store.move_task(task.task_id, "ou_owner", "0506"))
+            moved = store.get_task(task.task_id)
+            self.assertIsNotNone(moved)
+            self.assertEqual(moved.project, "0506")
+            self.assertEqual(moved.cron_expr, "0 9 * * *")
+            self.assertEqual(moved.prompt, "prompt")
+            self.assertEqual(moved.note, "note")
+
     def test_delete_task_removes_browser_trust_even_with_bad_owner_data(self) -> None:
         with tempfile.TemporaryDirectory() as data_dir:
             settings.data_dir = data_dir

@@ -139,6 +139,20 @@ def list_tasks(open_id: str) -> List[ScheduledTask]:
     return [ScheduledTask(*r) for r in rows]
 
 
+def move_task(task_id: str, open_id: str, project: str) -> bool:
+    """Move an owned task to another project."""
+    with _conn() as c:
+        cur = c.execute(
+            """
+            UPDATE schedule_tasks
+            SET project = ?
+            WHERE task_id = ? AND open_id = ?
+            """,
+            (project, task_id, open_id),
+        )
+        return cur.rowcount > 0
+
+
 def delete_task(task_id: str, open_id: str) -> bool:
     """删除任务(同时检查所有权,防止越权)。"""
     with _conn() as c:

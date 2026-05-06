@@ -223,6 +223,61 @@ class CronCommandTests(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_cron_move_updates_task_project_and_reschedules_job(self) -> None:
+        async def run_test() -> None:
+            task = scheduler_store.add_task("ou_user", "scratch", "0 9 * * *", "prompt", "note")
+            app_module.project_manager.ensure_project_root("ou_user", "0506")
+            parsed = ParsedMessageEvent(
+                event_id="evt-move-1",
+                sender_open_id="ou_user",
+                chat_id="oc_1",
+                chat_type="p2p",
+                message_id="om_move_1",
+                text=f"/cron move {task.task_id} 0506",
+                attachments=[],
+            )
+
+            with patch.object(app_module.feishu_client, "send_text", new=AsyncMock()) as send_text, \
+                patch.object(scheduler_store, "schedule_job") as schedule_job:
+                await app_module._dispatch(parsed)
+
+            moved = scheduler_store.get_task(task.task_id)
+            self.assertIsNotNone(moved)
+            self.assertEqual(moved.project, "0506")
+            schedule_job.assert_called_once_with(task.task_id, "0 9 * * *")
+            self.assertEqual(
+                send_text.await_args.args[1],
+                f"✅ 已迁移定时任务 #{task.task_id}: scratch → 0506",
+            )
+
+        asyncio.run(run_test())
+
+    def test_cron_move_rejects_missing_target_project(self) -> None:
+        async def run_test() -> None:
+            task = scheduler_store.add_task("ou_user", "scratch", "0 9 * * *", "prompt", "note")
+            parsed = ParsedMessageEvent(
+                event_id="evt-move-2",
+                sender_open_id="ou_user",
+                chat_id="oc_1",
+                chat_type="p2p",
+                message_id="om_move_2",
+                text=f"/cron move {task.task_id} missing",
+                attachments=[],
+            )
+
+            with patch.object(app_module.feishu_client, "send_text", new=AsyncMock()) as send_text, \
+                patch.object(scheduler_store, "schedule_job") as schedule_job:
+                await app_module._dispatch(parsed)
+
+            self.assertEqual(scheduler_store.get_task(task.task_id).project, "scratch")
+            schedule_job.assert_not_called()
+            self.assertEqual(
+                send_text.await_args.args[1],
+                "项目 'missing' 不存在。先用 /project new missing 创建。",
+            )
+
+        asyncio.run(run_test())
+
     def test_cron_help_includes_browser_revoke_command(self) -> None:
         async def run_test() -> None:
             parsed = ParsedMessageEvent(
@@ -239,6 +294,7 @@ class CronCommandTests(unittest.TestCase):
                 await app_module._dispatch(parsed)
 
             self.assertIn("/cron browser revoke <task_id>", send_text.await_args.args[1])
+            self.assertIn("/cron move <task_id> <project>", send_text.await_args.args[1])
 
         asyncio.run(run_test())
 
