@@ -130,7 +130,7 @@ class MediaAnalyzeTests(unittest.TestCase):
                 anthropic_auth_token="coding-token",
                 glm_vision_api_key="vision-token",
                 glm_vision_model="doubao-vision",
-                glm_vision_base_url="https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+                glm_vision_base_url="https://api.z.ai/api/paas/v4/chat/completions",
                 api_timeout_ms="3000000",
             )
 
