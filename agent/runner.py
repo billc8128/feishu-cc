@@ -263,6 +263,7 @@ _stderr_buffers: Dict[str, Deque[str]] = {}
 _RUN_CARD_UPDATE_INTERVAL_SECONDS = 1.5
 _RUN_CARD_RECENT_ACTION_LIMIT = 5
 _COMPACT_COMMAND = "/compact"
+_COMPACT_TIMEOUT_SECONDS = 20.0
 
 
 def _make_stderr_collector(open_id: str):
@@ -874,6 +875,26 @@ async def _compact_current_session(
     client: ClaudeSDKClient,
 ) -> bool:
     try:
+        return await asyncio.wait_for(
+            _compact_current_session_once(open_id, project, client),
+            timeout=_COMPACT_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        logger.warning(
+            "context compact timed out for %s/%s after %.1fs",
+            open_id[:12],
+            project,
+            _COMPACT_TIMEOUT_SECONDS,
+        )
+        return False
+
+
+async def _compact_current_session_once(
+    open_id: str,
+    project: str,
+    client: ClaudeSDKClient,
+) -> bool:
+    try:
         await client.query(_COMPACT_COMMAND)
     except Exception:
         logger.exception("context compact query failed for %s/%s", open_id[:12], project)
@@ -1010,6 +1031,11 @@ async def _run_query(
                         "context window limit for %s/%s; trying compact",
                         open_id[:12],
                         project,
+                    )
+                    await feishu_client.send_text(
+                        open_id,
+                        "⚠️ 上下文窗口已满，正在尝试压缩当前项目会话。"
+                        "如果压缩失败，我会自动重置会话。",
                     )
                     compacted = await _compact_current_session(open_id, project, client)
                     if compacted:

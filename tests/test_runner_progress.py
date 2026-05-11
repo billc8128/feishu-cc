@@ -108,6 +108,30 @@ class _FakeClient:
             yield msg
 
 
+class _HangingCompactClient:
+    def __init__(self) -> None:
+        self.queries = []
+        self._receive_count = 0
+
+    async def query(self, text: str) -> None:
+        self.queries.append(text)
+
+    async def receive_response(self):
+        self._receive_count += 1
+        if self._receive_count == 1:
+            yield _FakeAssistantMessage(
+                [
+                    _FakeTextBlock(
+                        "API Error: The model has reached its context window limit."
+                    )
+                ]
+            )
+            yield _FakeResultMessage(is_error=True, subtype="success")
+            return
+
+        await asyncio.Event().wait()
+
+
 class RunnerProgressTests(unittest.TestCase):
     def test_run_query_aggregates_tool_updates_into_single_card(self) -> None:
         async def run_test() -> None:
@@ -290,9 +314,10 @@ class RunnerProgressTests(unittest.TestCase):
             mark_session_reset.assert_not_called()
             discard_pooled_client.assert_not_awaited()
             send_markdown.assert_not_awaited()
-            send_text.assert_awaited_once()
-            self.assertIn("上下文窗口已满", send_text.await_args.args[1])
-            self.assertIn("已压缩当前项目会话", send_text.await_args.args[1])
+            self.assertEqual(send_text.await_count, 2)
+            self.assertIn("正在尝试压缩", send_text.await_args_list[0].args[1])
+            self.assertIn("上下文窗口已满", send_text.await_args_list[-1].args[1])
+            self.assertIn("已压缩当前项目会话", send_text.await_args_list[-1].args[1])
 
         asyncio.run(run_test())
 
@@ -354,9 +379,64 @@ class RunnerProgressTests(unittest.TestCase):
             mark_session_reset.assert_called_once_with("ou_123", "scratch")
             discard_pooled_client.assert_awaited_once_with("ou_123", "scratch", pooled)
             send_markdown.assert_not_awaited()
-            send_text.assert_awaited_once()
-            self.assertIn("上下文窗口已满", send_text.await_args.args[1])
-            self.assertIn("已重置当前项目会话", send_text.await_args.args[1])
+            self.assertEqual(send_text.await_count, 2)
+            self.assertIn("正在尝试压缩", send_text.await_args_list[0].args[1])
+            self.assertIn("上下文窗口已满", send_text.await_args_list[-1].args[1])
+            self.assertIn("已重置当前项目会话", send_text.await_args_list[-1].args[1])
+
+        asyncio.run(run_test())
+
+    def test_run_query_resets_session_when_context_compact_hangs(self) -> None:
+        async def run_test() -> None:
+            fake_client = _HangingCompactClient()
+            pooled = SimpleNamespace(client=fake_client)
+
+            with patch.object(runner, "AssistantMessage", _FakeAssistantMessage), patch.object(
+                runner, "TextBlock", _FakeTextBlock
+            ), patch.object(runner, "ToolUseBlock", _FakeToolUseBlock), patch.object(
+                runner, "ToolResultBlock", _FakeToolResultBlock
+            ), patch.object(
+                runner, "ResultMessage", _FakeResultMessage
+            ), patch.object(
+                runner,
+                "_COMPACT_TIMEOUT_SECONDS",
+                0.01,
+                create=True,
+            ), patch.object(
+                runner.project_state, "set_active_session_id", new=Mock()
+            ) as set_active_session_id, patch.object(
+                runner.project_state, "mark_session_reset", new=Mock()
+            ) as mark_session_reset, patch.object(
+                runner,
+                "_discard_pooled_client",
+                new=AsyncMock(),
+            ) as discard_pooled_client, patch.object(
+                runner.feishu_client,
+                "send_markdown",
+                new=AsyncMock(),
+            ) as send_markdown, patch.object(
+                runner.feishu_client,
+                "update_markdown",
+                new=AsyncMock(return_value=True),
+            ), patch.object(
+                runner.feishu_client,
+                "send_text",
+                new=AsyncMock(),
+            ) as send_text:
+                await asyncio.wait_for(
+                    runner._run_query("ou_123", "scratch", pooled, "继续上一条"),
+                    timeout=0.2,
+                )
+
+            self.assertEqual(fake_client.queries, ["继续上一条", "/compact"])
+            set_active_session_id.assert_not_called()
+            mark_session_reset.assert_called_once_with("ou_123", "scratch")
+            discard_pooled_client.assert_awaited_once_with("ou_123", "scratch", pooled)
+            send_markdown.assert_not_awaited()
+            self.assertEqual(send_text.await_count, 2)
+            self.assertIn("正在尝试压缩", send_text.await_args_list[0].args[1])
+            self.assertIn("上下文窗口已满", send_text.await_args_list[-1].args[1])
+            self.assertIn("已重置当前项目会话", send_text.await_args_list[-1].args[1])
 
         asyncio.run(run_test())
 
