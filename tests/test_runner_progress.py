@@ -91,14 +91,20 @@ class _FakeResultMessage:
 
 class _FakeClient:
     def __init__(self, messages) -> None:
-        self._messages = messages
+        if messages and isinstance(messages[0], list):
+            self._responses = messages
+        else:
+            self._responses = [messages]
+        self._receive_count = 0
         self.queries = []
 
     async def query(self, text: str) -> None:
         self.queries.append(text)
 
     async def receive_response(self):
-        for msg in self._messages:
+        messages = self._responses[self._receive_count]
+        self._receive_count += 1
+        for msg in messages:
             yield msg
 
 
@@ -222,6 +228,134 @@ class RunnerProgressTests(unittest.TestCase):
             send_markdown.assert_not_awaited()
             send_text.assert_awaited_once()
             self.assertIn("当前模型不支持图片输入", send_text.await_args.args[1])
+            self.assertIn("已重置当前项目会话", send_text.await_args.args[1])
+
+        asyncio.run(run_test())
+
+    def test_run_query_compacts_session_for_context_window_limit_error(self) -> None:
+        async def run_test() -> None:
+            fake_client = _FakeClient(
+                [
+                    [
+                        _FakeAssistantMessage(
+                            [
+                                _FakeTextBlock(
+                                    "API Error: The model has reached its context window limit."
+                                )
+                            ]
+                        ),
+                        _FakeResultMessage(is_error=True, subtype="success"),
+                    ],
+                    [
+                        _FakeAssistantMessage([_FakeTextBlock("Compacted conversation.")]),
+                        _FakeResultMessage(session_id="sess_compacted", subtype="success"),
+                    ],
+                ]
+            )
+            pooled = SimpleNamespace(client=fake_client)
+
+            with patch.object(runner, "AssistantMessage", _FakeAssistantMessage), patch.object(
+                runner, "TextBlock", _FakeTextBlock
+            ), patch.object(runner, "ToolUseBlock", _FakeToolUseBlock), patch.object(
+                runner, "ToolResultBlock", _FakeToolResultBlock
+            ), patch.object(
+                runner, "ResultMessage", _FakeResultMessage
+            ), patch.object(
+                runner.project_state, "set_active_session_id", new=Mock()
+            ) as set_active_session_id, patch.object(
+                runner.project_state, "mark_session_reset", new=Mock()
+            ) as mark_session_reset, patch.object(
+                runner,
+                "_discard_pooled_client",
+                new=AsyncMock(),
+            ) as discard_pooled_client, patch.object(
+                runner.feishu_client,
+                "send_markdown",
+                new=AsyncMock(),
+            ) as send_markdown, patch.object(
+                runner.feishu_client,
+                "update_markdown",
+                new=AsyncMock(return_value=True),
+            ), patch.object(
+                runner.feishu_client,
+                "send_text",
+                new=AsyncMock(),
+            ) as send_text:
+                await runner._run_query("ou_123", "scratch", pooled, "继续上一条")
+
+            self.assertEqual(fake_client.queries, ["继续上一条", "/compact"])
+            set_active_session_id.assert_called_once_with(
+                "ou_123", "scratch", "sess_compacted"
+            )
+            mark_session_reset.assert_not_called()
+            discard_pooled_client.assert_not_awaited()
+            send_markdown.assert_not_awaited()
+            send_text.assert_awaited_once()
+            self.assertIn("上下文窗口已满", send_text.await_args.args[1])
+            self.assertIn("已压缩当前项目会话", send_text.await_args.args[1])
+
+        asyncio.run(run_test())
+
+    def test_run_query_resets_session_when_context_compact_fails(self) -> None:
+        async def run_test() -> None:
+            fake_client = _FakeClient(
+                [
+                    [
+                        _FakeAssistantMessage(
+                            [
+                                _FakeTextBlock(
+                                    "API Error: The model has reached its context window limit."
+                                )
+                            ]
+                        ),
+                        _FakeResultMessage(is_error=True, subtype="success"),
+                    ],
+                    [
+                        _FakeAssistantMessage(
+                            [_FakeTextBlock("API Error: Prompt is too long")]
+                        ),
+                        _FakeResultMessage(is_error=True, subtype="success"),
+                    ],
+                ]
+            )
+            pooled = SimpleNamespace(client=fake_client)
+
+            with patch.object(runner, "AssistantMessage", _FakeAssistantMessage), patch.object(
+                runner, "TextBlock", _FakeTextBlock
+            ), patch.object(runner, "ToolUseBlock", _FakeToolUseBlock), patch.object(
+                runner, "ToolResultBlock", _FakeToolResultBlock
+            ), patch.object(
+                runner, "ResultMessage", _FakeResultMessage
+            ), patch.object(
+                runner.project_state, "set_active_session_id", new=Mock()
+            ) as set_active_session_id, patch.object(
+                runner.project_state, "mark_session_reset", new=Mock()
+            ) as mark_session_reset, patch.object(
+                runner,
+                "_discard_pooled_client",
+                new=AsyncMock(),
+            ) as discard_pooled_client, patch.object(
+                runner.feishu_client,
+                "send_markdown",
+                new=AsyncMock(),
+            ) as send_markdown, patch.object(
+                runner.feishu_client,
+                "update_markdown",
+                new=AsyncMock(return_value=True),
+            ), patch.object(
+                runner.feishu_client,
+                "send_text",
+                new=AsyncMock(),
+            ) as send_text:
+                await runner._run_query("ou_123", "scratch", pooled, "继续上一条")
+
+            self.assertEqual(fake_client.queries, ["继续上一条", "/compact"])
+            set_active_session_id.assert_not_called()
+            mark_session_reset.assert_called_once_with("ou_123", "scratch")
+            discard_pooled_client.assert_awaited_once_with("ou_123", "scratch", pooled)
+            send_markdown.assert_not_awaited()
+            send_text.assert_awaited_once()
+            self.assertIn("上下文窗口已满", send_text.await_args.args[1])
             self.assertIn("已重置当前项目会话", send_text.await_args.args[1])
 
         asyncio.run(run_test())

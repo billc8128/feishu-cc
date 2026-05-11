@@ -262,6 +262,7 @@ _STDERR_BUFFER_LINES = 50
 _stderr_buffers: Dict[str, Deque[str]] = {}
 _RUN_CARD_UPDATE_INTERVAL_SECONDS = 1.5
 _RUN_CARD_RECENT_ACTION_LIMIT = 5
+_COMPACT_COMMAND = "/compact"
 
 
 def _make_stderr_collector(open_id: str):
@@ -314,11 +315,44 @@ def _is_unsupported_image_input_error(text: str, subtype: str = "") -> bool:
     )
 
 
+def _is_context_window_limit_error(text: str, subtype: str = "") -> bool:
+    combined = f"{text}\n{subtype}".lower()
+    return any(
+        pattern in combined
+        for pattern in (
+            "context window limit",
+            "context length",
+            "context_length_exceeded",
+            "maximum context length",
+            "prompt is too long",
+            "input is too long",
+            "too many tokens",
+            "exceeds the context",
+        )
+    )
+
+
 def _unsupported_image_input_message() -> str:
     return (
         "❌ 当前模型不支持图片输入，当前项目会话里包含了图片读取记录。"
         "我已重置当前项目会话，请重新发送上一条文字需求。\n"
         "如果要继续分析图片/视频，请先配置可用的 GLM_VISION_* 多模态分析接口。"
+    )
+
+
+def _context_window_limit_message() -> str:
+    return (
+        "❌ 上下文窗口已满，当前项目会话的历史记录太长。"
+        "我已重置当前项目会话，请重新发送上一条需求。\n"
+        "后续长任务建议拆成几步，或先让我总结关键信息再继续。"
+    )
+
+
+def _context_window_compacted_message() -> str:
+    return (
+        "❌ 上下文窗口已满，原任务没有执行成功。"
+        "我已压缩当前项目会话并保留摘要，请重新发送上一条需求。\n"
+        "如果仍然失败，再把任务拆成几步执行。"
     )
 
 
@@ -834,6 +868,59 @@ async def interrupt_user(open_id: str) -> bool:
     return interrupted
 
 
+async def _compact_current_session(
+    open_id: str,
+    project: str,
+    client: ClaudeSDKClient,
+) -> bool:
+    try:
+        await client.query(_COMPACT_COMMAND)
+    except Exception:
+        logger.exception("context compact query failed for %s/%s", open_id[:12], project)
+        return False
+
+    compact_text: list[str] = []
+    try:
+        async for msg in client.receive_response():
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        compact_text.append(block.text)
+            elif isinstance(msg, ResultMessage):
+                compact_output = "".join(compact_text).strip()
+                if msg.is_error or _is_context_window_limit_error(
+                    compact_output, msg.subtype or ""
+                ):
+                    logger.warning(
+                        "context compact failed for %s/%s: subtype=%s output=%s",
+                        open_id[:12],
+                        project,
+                        msg.subtype,
+                        compact_output[:500],
+                    )
+                    return False
+                if msg.session_id:
+                    try:
+                        project_state.set_active_session_id(
+                            open_id, project, msg.session_id
+                        )
+                    except Exception:
+                        logger.exception(
+                            "failed to persist compacted session id for %s/%s",
+                            open_id[:12],
+                            project,
+                        )
+                return True
+            elif isinstance(msg, SystemMessage):
+                pass
+    except Exception:
+        logger.exception("context compact receive failed for %s/%s", open_id[:12], project)
+        return False
+
+    logger.warning("context compact ended without result for %s/%s", open_id[:12], project)
+    return False
+
+
 # ---------- 核心:运行单次 query 并流式回飞书 ----------
 
 async def _run_query(
@@ -877,8 +964,11 @@ async def _run_query(
                 unsupported_image_input = msg.is_error and _is_unsupported_image_input_error(
                     final_text, msg.subtype or ""
                 )
+                context_window_limit = msg.is_error and _is_context_window_limit_error(
+                    final_text, msg.subtype or ""
+                )
 
-                if msg.session_id and not unsupported_image_input:
+                if msg.session_id and not (unsupported_image_input or context_window_limit):
                     try:
                         project_state.set_active_session_id(
                             open_id, project, msg.session_id
@@ -912,6 +1002,48 @@ async def _run_query(
                     )
                     await feishu_client.send_text(
                         open_id, _unsupported_image_input_message()
+                    )
+                    break
+
+                if context_window_limit:
+                    logger.warning(
+                        "context window limit for %s/%s; trying compact",
+                        open_id[:12],
+                        project,
+                    )
+                    compacted = await _compact_current_session(open_id, project, client)
+                    if compacted:
+                        await progress_card.finish(
+                            outcome="error",
+                            detail="上下文窗口已满，已压缩会话",
+                            final_text_present=False,
+                        )
+                        await feishu_client.send_text(
+                            open_id, _context_window_compacted_message()
+                        )
+                        break
+
+                    logger.warning(
+                        "context compact failed for %s/%s; resetting session",
+                        open_id[:12],
+                        project,
+                    )
+                    try:
+                        project_state.mark_session_reset(open_id, project)
+                    except Exception:
+                        logger.exception(
+                            "failed to mark session reset after context limit for %s/%s",
+                            open_id[:12],
+                            project,
+                        )
+                    await _discard_pooled_client(open_id, project, pooled)
+                    await progress_card.finish(
+                        outcome="error",
+                        detail="上下文窗口已满，已重置会话",
+                        final_text_present=False,
+                    )
+                    await feishu_client.send_text(
+                        open_id, _context_window_limit_message()
                     )
                     break
 
